@@ -1,0 +1,23 @@
+# Python 环境与运行时（安装器生成）
+.venv/
+.runtime/
+__pycache__/
+*.py[cod]
+install-pip.log
+*.log
+
+# 安装器生成的本机路径探测结果
+jianying-paths.json
+
+# 安装器生成的项目级配置与技能副本
+.codex/
+.agents/
+
+# 运行过程中产生的工作产物
+shotlists/
+assets-index.json
+assets-index.md
+contact-*.jpg
+
+# 测试用大体积视频（需要入库时请走 Git LFS）
+test-video/*.mp4

@@ -1,0 +1,11 @@
+{
+  "draft_name": "ep01-demo",
+  "canvas": { "width": 1080, "height": 1920, "ratio": "9:16", "fps": 30 },
+  "shots": [
+    { "file": "assets/ep01/shot01.mp4", "duration": 4 },
+    { "file": "assets/ep01/shot02.mp4", "duration": 5, "target_start": 4 },
+    { "file": "assets/ep01/shot03.mp4", "duration": 6, "target_start": 9 }
+  ],
+  "subtitles": { "srt": "assets/ep01/ep01.srt" },
+  "bgm": { "file": "assets/ep01/bgm.m4a", "volume": 0.35, "fade_in": 1, "fade_out": 2 }
+}
