@@ -373,32 +373,20 @@ def _enum_member(enum_cls, value: str, field: str):
         raise TemplateError(f"{field} 取值不支持：{value}（可选 {allowed}）") from exc
 
 
-def apply_row(
-    root: Path, plan: dict[str, Any], row: dict[str, Any], *, base_dir: Path
+def _prepare_row(
+    content: dict[str, Any], row: dict[str, Any], base_dir: Path, defaults: dict[str, Any]
 ) -> dict[str, Any]:
-    """把清单里的一行套用到目标草稿上（目标草稿必须已经存在）。
+    """只读预检一行：素材在不在、轨道能不能换、文案条数对不对、时长够不够。
 
-    先做只读预检（素材存在、轨道可解析、文案条数对得上、按名字替换不会截短片段），
-    再在影子明文文件上一次性完成替换；任何一步失败都不会留下改了一半的草稿。
+    ``fill`` 的 dry-run 与 ``apply_row`` 共用这一份检查，保证"预检通过"与
+    "真跑能过"是同一套标准。返回可直接执行的操作清单。
     """
-    root = resolve_root(root)
-    name = row.get("name")
-    if not name:
-        raise RowFailed("(未命名)", "清单行缺少 name")
-    name = str(name)
-    project = _project(root, name)
-    content, _ = read_draft(root, name)
-
-    defaults = plan.get("defaults") or {}
-    materials = row.get("materials") or {}
-    by_name = materials.get("by_name") or {}
-    by_slot = materials.get("by_slot") or []
-    texts = row.get("texts") or {}
-
-    replaced = {"by_name": 0, "by_slot": 0, "texts": 0}
-    warnings: list[str] = []
-
     try:
+        materials = row.get("materials") or {}
+        by_name = materials.get("by_name") or {}
+        by_slot = materials.get("by_slot") or []
+        texts = row.get("texts") or {}
+
         loaded_by_name: list[tuple[str, Any]] = []
         for material_name, value in by_name.items():
             path = _media_path(base_dir, str(value))
@@ -450,6 +438,44 @@ def apply_row(
                     f"文本轨 {track_name} 有 {count} 个片段，但给了 {len(values)} 条文案"
                 )
             resolved_texts.append((str(track_name), list(values)))
+    except TemplateError:
+        raise
+    except Exception as exc:
+        raise TemplateError(f"{type(exc).__name__}: {exc}") from exc
+
+    return {
+        "by_name": loaded_by_name,
+        "slots": resolved_slots,
+        "texts": resolved_texts,
+        "covered": _covered_slots(content, set(by_name), by_slot, texts),
+    }
+
+
+def apply_row(
+    root: Path, plan: dict[str, Any], row: dict[str, Any], *, base_dir: Path
+) -> dict[str, Any]:
+    """把清单里的一行套用到目标草稿上（目标草稿必须已经存在）。
+
+    先做只读预检（素材存在、轨道可解析、文案条数对得上、按名字替换不会截短片段），
+    再在影子明文文件上一次性完成替换；任何一步失败都不会留下改了一半的草稿。
+    """
+    root = resolve_root(root)
+    name = row.get("name")
+    if not name:
+        raise RowFailed("(未命名)", "清单行缺少 name")
+    name = str(name)
+    project = _project(root, name)
+    content, _ = read_draft(root, name)
+
+    defaults = plan.get("defaults") or {}
+    replaced = {"by_name": 0, "by_slot": 0, "texts": 0}
+    warnings: list[str] = []
+
+    try:
+        prepared = _prepare_row(content, row, base_dir, defaults)
+        loaded_by_name = prepared["by_name"]
+        resolved_slots = prepared["slots"]
+        resolved_texts = prepared["texts"]
 
         def operation(script) -> None:
             from pyJianYingDraft.template_mode import ExtendMode, ShrinkMode
@@ -496,13 +522,12 @@ def apply_row(
     except Exception as exc:  # 库抛的轨道/素材歧义、越界等，一律收敛成"该行失败"
         raise RowFailed(name, f"{type(exc).__name__}: {exc}") from exc
 
-    covered = _covered_slots(content, set(by_name), by_slot, texts)
     return {
         "row": name,
         "draft": str(project),
         "replaced": replaced,
         "warnings": warnings,
-        "unfilled_slots": _unfilled_slots(content, covered),
+        "unfilled_slots": _unfilled_slots(content, prepared["covered"]),
     }
 
 
@@ -567,4 +592,105 @@ def import_track(
         "target": target_draft,
         "track": imported_name,
         "imported": True,
+    }
+
+
+def load_plan(path: Path) -> dict[str, Any]:
+    """读清单 JSON 并检查必填字段。"""
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TemplateError(f"清单读不出来：{path}（{exc}）") from exc
+    if not isinstance(data, dict):
+        raise TemplateError("清单必须是一个 JSON 对象")
+    if not data.get("template"):
+        raise TemplateError("清单缺少 template")
+    rows = data.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise TemplateError("清单缺少非空的 rows")
+    return data
+
+
+def fill(
+    root: Path,
+    plan: dict[str, Any],
+    *,
+    base_dir: Path,
+    dry_run: bool = False,
+    rows: set[int] | None = None,
+) -> dict[str, Any]:
+    """按清单批量出草稿：逐行复制模板 → 替换 → 汇总报告。
+
+    预检（dry-run 也只做这一步）覆盖模板存在、目标名不撞已有草稿也不互相撞名、
+    素材存在、轨道与文案可解析。任何一行失败只影响该行，整批继续；
+    失败行的原因写进报告的 ``error``，由调用方决定退出码。
+    """
+    root = resolve_root(root)
+    template = str(plan.get("template") or "")
+    if not template:
+        raise TemplateError("清单缺少 template")
+    raw_rows = plan.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise TemplateError("清单缺少非空的 rows")
+    if not (root / template).is_dir():
+        raise TemplateError(f"模板草稿不存在：{root / template}")
+
+    template_content, _ = read_draft(root, template)
+    defaults = plan.get("defaults") or {}
+    require_all = bool(plan.get("require_all_slots"))
+    selected = [
+        (index, row)
+        for index, row in enumerate(raw_rows, start=1)
+        if rows is None or index in rows
+    ]
+
+    results: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    ok_count = 0
+    for index, row in selected:
+        name = str(row.get("name") or f"{template}-{index}")
+        entry: dict[str, Any] = {
+            "row": name,
+            "index": index,
+            "draft": str(root / name),
+            "draft_ok": False,
+            "error": None,
+            "replaced": {"by_name": 0, "by_slot": 0, "texts": 0},
+            "warnings": [],
+            "unfilled_slots": [],
+        }
+        try:
+            if name in seen:
+                raise TemplateError(f"与第 {seen[name]} 行重名：{name}")
+            seen[name] = index
+            if (root / name).exists():
+                raise TemplateError(f"目标草稿已存在：{root / name}")
+            prepared = _prepare_row(template_content, row, base_dir, defaults)
+            unfilled = _unfilled_slots(template_content, prepared["covered"])
+            if require_all and unfilled:
+                raise TemplateError(
+                    f"还有槽位没填：{unfilled[0]}（共 {len(unfilled)} 个）"
+                )
+            if not dry_run:
+                duplicate(root, template, name)
+                detail = apply_row(root, plan, {**row, "name": name}, base_dir=base_dir)
+                entry.update(detail)
+            entry["unfilled_slots"] = unfilled
+            entry["draft_ok"] = True
+            ok_count += 1
+        except Exception as exc:
+            entry["error"] = (
+                str(exc) if isinstance(exc, TemplateError) else f"{type(exc).__name__}: {exc}"
+            )
+        results.append(entry)
+
+    return {
+        "template": template,
+        "dry_run": bool(dry_run),
+        "rows": results,
+        "ok_count": ok_count,
+        "failed_count": len(results) - ok_count,
     }

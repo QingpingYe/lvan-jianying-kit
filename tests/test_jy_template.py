@@ -202,8 +202,8 @@ class SlotTests(unittest.TestCase):
             self.assertFalse(effects[0]["replaceable"])
 
 
-class ApplyRowTests(unittest.TestCase):
-    """单行替换：素材、文案、时长策略、失败路径与跨草稿搬轨道。"""
+class TempDraftCase(unittest.TestCase):
+    """公共脚手架：在临时目录里造草稿，并用假素材替掉真实媒体探测。"""
 
     def setUp(self) -> None:
         self._durations: dict[str, int] = {}
@@ -231,6 +231,18 @@ class ApplyRowTests(unittest.TestCase):
 
     def content(self, root: Path, name: str) -> dict:
         return json.loads((root / name / "draft_content.json").read_text(encoding="utf-8"))
+
+    def tree_snapshot(self, root: Path) -> dict[str, tuple[int, int]]:
+        """目录树快照（相对路径 → 大小 + mtime），用来断言"什么都没写"。"""
+        return {
+            str(path.relative_to(root)): (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+
+class ApplyRowTests(TempDraftCase):
+    """单行替换：素材、文案、时长策略、失败路径与跨草稿搬轨道。"""
 
     def test_replace_by_name_updates_every_referencing_segment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -433,6 +445,157 @@ class ApplyRowTests(unittest.TestCase):
 
             with self.assertRaises(jy_template.TemplateError):
                 jy_template.import_track(root, "模板", "目标", "title")
+
+
+class FillTests(TempDraftCase):
+    """整批编排：失败不中断、dry-run 不落盘、行过滤、未填槽位与撞名。"""
+
+    def video_row(self, name: str, file: Path) -> dict:
+        return {
+            "name": name,
+            "materials": {
+                "by_slot": [{"track": "main_video", "segment": 0, "file": str(file)}]
+            },
+        }
+
+    def plan(self, rows: list[dict], **extra: object) -> dict:
+        return {"template": "模板", "rows": rows, **extra}
+
+    def test_failed_row_does_not_stop_the_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            good = self.media(root / "素材", "好.mp4")
+
+            report = jy_template.fill(
+                root,
+                self.plan([
+                    self.video_row("第1集", root / "素材" / "缺.mp4"),
+                    self.video_row("第2集", good),
+                ]),
+                base_dir=root,
+            )
+
+            self.assertEqual((report["ok_count"], report["failed_count"]), (1, 1))
+            self.assertTrue((root / "第2集").is_dir())
+            self.assertFalse((root / "第1集").exists())
+            self.assertFalse(report["rows"][0]["draft_ok"])
+            self.assertIn("缺.mp4", report["rows"][0]["error"])
+
+    def test_duplicate_row_names_fail_the_second_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            good = self.media(root / "素材", "好.mp4")
+
+            report = jy_template.fill(
+                root,
+                self.plan([self.video_row("第1集", good), self.video_row("第1集", good)]),
+                base_dir=root,
+            )
+
+            self.assertTrue(report["rows"][0]["draft_ok"])
+            self.assertFalse(report["rows"][1]["draft_ok"])
+            self.assertIn("重名", report["rows"][1]["error"])
+            self.assertIn("1", report["rows"][1]["error"])
+
+    def test_dry_run_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            good = self.media(root / "素材", "好.mp4")
+            before = self.tree_snapshot(root)
+
+            report = jy_template.fill(
+                root, self.plan([self.video_row("第1集", good)]), base_dir=root, dry_run=True
+            )
+
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["ok_count"], 1)
+            self.assertEqual(self.tree_snapshot(root), before)
+            self.assertFalse((root / "第1集").exists())
+
+    def test_rows_filter_runs_only_the_selected_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            good = self.media(root / "素材", "好.mp4")
+            rows = [
+                {
+                    "materials": {
+                        "by_slot": [{"track": "main_video", "segment": 0, "file": str(good)}]
+                    }
+                }
+                for _ in range(3)
+            ]
+
+            report = jy_template.fill(root, self.plan(rows), base_dir=root, rows={2})
+
+            self.assertEqual(len(report["rows"]), 1)
+            self.assertTrue((root / "模板-2").is_dir())
+            self.assertFalse((root / "模板-1").exists())
+            self.assertFalse((root / "模板-3").exists())
+
+    def test_missing_template_fails_the_whole_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.fill(
+                    root,
+                    {"template": "不存在", "rows": [{"name": "第1集"}]},
+                    base_dir=root,
+                )
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_existing_target_draft_fails_that_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            existing = make_template_draft(root, "第1集", material_name="别人.mp4")
+            before = (existing / "draft_content.json").read_bytes()
+            good = self.media(root / "素材", "好.mp4")
+
+            report = jy_template.fill(
+                root, self.plan([self.video_row("第1集", good)]), base_dir=root
+            )
+
+            self.assertFalse(report["rows"][0]["draft_ok"])
+            self.assertIn("已存在", report["rows"][0]["error"])
+            self.assertEqual((existing / "draft_content.json").read_bytes(), before)
+
+    def test_partial_row_lists_unfilled_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+
+            report = jy_template.fill(
+                root,
+                self.plan([{"name": "第1集", "texts": {"title": ["改过的标题"]}}]),
+                base_dir=root,
+            )
+
+            row = report["rows"][0]
+            self.assertTrue(row["draft_ok"])
+            self.assertEqual(row["unfilled_slots"], ["main_video[0]:material"])
+
+    def test_require_all_slots_turns_warnings_into_a_failed_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+
+            report = jy_template.fill(
+                root,
+                self.plan(
+                    [{"name": "第1集", "texts": {"title": ["改过的标题"]}}],
+                    require_all_slots=True,
+                ),
+                base_dir=root,
+            )
+
+            row = report["rows"][0]
+            self.assertFalse(row["draft_ok"])
+            self.assertIn("main_video[0]:material", row["error"])
+            self.assertFalse((root / "第1集").exists())
 
 
 if __name__ == "__main__":
