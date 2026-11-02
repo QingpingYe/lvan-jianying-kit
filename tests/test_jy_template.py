@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -596,6 +597,57 @@ class FillTests(TempDraftCase):
             self.assertFalse(row["draft_ok"])
             self.assertIn("main_video[0]:material", row["error"])
             self.assertFalse((root / "第1集").exists())
+
+
+class CliTests(TempDraftCase):
+    """命令行薄包装：退出码、stdout 上的报告、dry-run 不落盘。
+
+    命令行用子进程跑，进程内 patch 的假素材不生效，所以这里只覆盖不需要媒体探测的
+    文本替换；素材替换的真实探测路径交给端到端验收（用真实素材跑）。
+    """
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "template_fill.py"), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def write_plan(self, root: Path, plan: dict) -> Path:
+        path = root / "plan.json"
+        path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def test_dry_run_reports_ok_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            plan = self.write_plan(
+                root,
+                {
+                    "template": "模板",
+                    "rows": [{"name": "第1集", "texts": {"title": ["新的标题"]}}],
+                },
+            )
+            before = self.tree_snapshot(root)
+
+            result = self.run_cli("--plan", str(plan), "--root", str(root), "--dry-run")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertTrue(report["dry_run"])
+            self.assertEqual(report["ok_count"], 1)
+            self.assertEqual(self.tree_snapshot(root), before)
+
+    def test_missing_plan_file_exits_2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_cli(
+                "--plan", str(Path(tmp) / "缺.json"), "--root", tmp, "--dry-run"
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("清单", result.stderr)
 
 
 if __name__ == "__main__":

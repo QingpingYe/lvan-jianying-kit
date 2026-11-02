@@ -1,0 +1,35 @@
+{
+  "template": "Codex 剪映工具演示",
+  "defaults": { "shrink": "cut_tail", "extend": "cut_material_tail" },
+  "rows": [
+    {
+      "name": "第1集",
+      "materials": {
+        "by_name": { "封面占位.png": "素材/第1集/封面.png" },
+        "by_slot": [
+          {
+            "track": "main_video",
+            "segment": 0,
+            "file": "素材/第1集/01.mp4",
+            "source_start": 2.0,
+            "duration": 6.0
+          }
+        ]
+      },
+      "texts": { "title": ["第1集"], "subtitle": ["第一句", "第二句"] }
+    },
+    {
+      "name": "第2集",
+      "materials": {
+        "by_slot": [
+          {
+            "track": "main_video",
+            "segment": 0,
+            "file": "素材/第2集/01.mp4"
+          }
+        ]
+      },
+      "texts": { "title": ["第2集"], "subtitle": ["第三句", "第四句"] }
+    }
+  ]
+}

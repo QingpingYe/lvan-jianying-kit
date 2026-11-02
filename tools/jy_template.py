@@ -57,6 +57,38 @@ def resolve_root(root: str | Path | None = None) -> Path:
     return candidate
 
 
+def apply_jianying_env(start: Path | None = None) -> dict[str, str]:
+    """把安装器探测到的剪映路径读进环境变量。
+
+    剪映装在非默认位置（或草稿目录被改过）时，编解码层靠这几个变量找到
+    ``videoeditor.dll``；查找顺序与 ``build_draft.py`` 一致：运行时目录、
+    插件根目录、脚本所在目录。
+    """
+    here = start or Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    if os.environ.get("JIANYING_KIT_HOME"):
+        candidates.append(Path(os.environ["JIANYING_KIT_HOME"]) / "jianying-paths.json")
+    candidates += [here / "jianying-paths.json", here.parent / "jianying-paths.json"]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        applied = {
+            str(key): str(value)
+            for key, value in data.items()
+            if isinstance(value, str) and value
+        }
+        for key, value in applied.items():
+            os.environ.setdefault(key, value)
+        return applied
+    return {}
+
+
 def _project(root: Path, name: str) -> Path:
     """定位草稿目录，不存在就报错（而不是默默新建一个空目录）。"""
     project = root / name
