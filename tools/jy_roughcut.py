@@ -348,3 +348,98 @@ def report(plan: dict[str, Any], grouping: dict[str, Any] | None = None) -> str:
             items.append(f"- 镜头 {shot.get('shot')}：{detail or '低置信，需人工复核'}")
     lines += items or ["- 无"]
     return "\n".join(lines)
+
+
+def frame_times(duration: float, count: int = 5) -> list[float]:
+    """一个素材内均匀取帧的时刻：10% 到 90%，count == 1 时取中点。"""
+    duration = float(duration)
+    if count <= 1:
+        return [round(duration / 2, 3)]
+    return [round(duration * (0.1 + 0.8 * i / (count - 1)), 3) for i in range(count)]
+
+
+def _default_grab(path: Path, t: float):  # pragma: no cover - 需要本机 ffmpeg
+    """用本机 ffmpeg 抽单帧，返回 PIL 图像。"""
+    import io
+    import subprocess
+
+    import imageio_ffmpeg
+    from PIL import Image
+
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    proc = subprocess.run(
+        [
+            exe,
+            "-ss",
+            str(t),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "-",
+        ],
+        capture_output=True,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        raise RoughcutError(f"抽帧失败：{path.name} @ {t}s")
+    return Image.open(io.BytesIO(proc.stdout)).convert("RGB")
+
+
+def frames(
+    grouping: dict[str, Any],
+    scan: dict[str, Any],
+    out: Path,
+    *,
+    count: int = 5,
+    grab: Callable[[Path, float], Any] | None = None,
+) -> dict[str, Any]:
+    """每个镜头一张联系表：各 take 并排，take 内按 2 列排布该 take 的帧。"""
+    from PIL import Image, ImageDraw
+
+    out = Path(out)
+    frames_dir = out / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    grab = grab or _default_grab
+    clips = {c["file"]: c for c in scan.get("clips", [])}
+    root = Path(scan.get("root", "."))
+    cell_w, cell_h, label_h = 240, 135, 18
+    sheets: list[str] = []
+
+    for shot in grouping.get("shots") or []:
+        pairs_per_take: list[list[tuple[str, float]]] = []
+        for take in shot.get("takes") or []:
+            pairs: list[tuple[str, float]] = []
+            for name in take.get("files") or []:
+                duration = float((clips.get(name) or {}).get("duration") or 1.0)
+                pairs.extend((name, t) for t in frame_times(duration, count))
+            pairs_per_take.append(pairs)
+        if not pairs_per_take:
+            continue
+
+        rows = max(1, max((len(pairs) + 1) // 2 for pairs in pairs_per_take))
+        cols = 2 * len(pairs_per_take)
+        sheet = Image.new("RGB", (cols * cell_w, rows * (cell_h + label_h)), (18, 18, 18))
+        draw = ImageDraw.Draw(sheet)
+        for block, pairs in enumerate(pairs_per_take):
+            for index, (name, t) in enumerate(pairs):
+                x = (block * 2 + index % 2) * cell_w
+                y = (index // 2) * (cell_h + label_h)
+                try:
+                    frame = grab(root / name, t).convert("RGB")
+                except Exception:  # noqa: BLE001 - 单帧失败画灰块，不中断
+                    frame = Image.new("RGB", (cell_w, cell_h), (60, 0, 0))
+                frame.thumbnail((cell_w, cell_h))
+                sheet.paste(
+                    frame,
+                    (x + (cell_w - frame.width) // 2, y + (cell_h - frame.height) // 2),
+                )
+                draw.text((x + 4, y + cell_h + 2), f"{name} @ {t}", fill=(230, 230, 230))
+        sheet_path = frames_dir / f"shot-{shot.get('shot')}.jpg"
+        sheet.save(sheet_path, quality=85)
+        sheets.append(str(sheet_path))
+
+    return {"sheets": sheets, "shots": len(sheets)}

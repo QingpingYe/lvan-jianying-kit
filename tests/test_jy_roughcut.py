@@ -283,5 +283,37 @@ class ReportTests(unittest.TestCase):
         self.assertIn("5.00", text)
 
 
+class FramesTests(unittest.TestCase):
+    def test_frame_times_are_inside_the_clip(self):
+        self.assertEqual(jy_roughcut.frame_times(10.0, 3), [1.0, 5.0, 9.0])
+        self.assertEqual(jy_roughcut.frame_times(8.0, 1), [4.0])
+
+    def test_sheets_one_per_shot_with_injected_grab(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4", "b.mp4", "c.mp4")
+            grouping = make_grouping(
+                shots=[
+                    {"shot": "01", "takes": [{"take": "01", "kind": "single", "files": ["a.mp4"]}]},
+                    {
+                        "shot": "02",
+                        "takes": [{"take": "01", "kind": "segmented", "files": ["b.mp4", "c.mp4"]}],
+                    },
+                ]
+            )
+
+            def grab(path, t):
+                return Image.new("RGB", (120, 68), (30, 30, 30))
+
+            result = jy_roughcut.frames(grouping, scan, out, count=2, grab=grab)
+            self.assertEqual(result["shots"], 2)
+            self.assertEqual(len(result["sheets"]), 2)
+            self.assertTrue(all("shot-" in Path(p).name for p in result["sheets"]))
+            with Image.open(result["sheets"][0]) as img:
+                self.assertGreater(img.width, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
