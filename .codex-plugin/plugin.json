@@ -1,0 +1,42 @@
+{
+  "name": "jianying-kit",
+  "version": "0.6.0",
+  "description": "Let Codex drive JianyingPro (CapCut CN desktop) drafts through a local MCP server: build drafts from scripts and clips, edit segments, add subtitles, BGM, voiceover, and export. Windows only.",
+  "author": {
+    "name": "YeQingping"
+  },
+  "repository": "https://gcode.iwgame.com/ai/agent/codex-jianying-kit",
+  "keywords": [
+    "jianying",
+    "capcut",
+    "video editing",
+    "subtitle",
+    "draft",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  },
+  "interface": {
+    "displayName": "Jianying Drafts",
+    "shortDescription": "Drive JianyingPro drafts with natural language",
+    "longDescription": "Assemble scripts, clips, subtitles, BGM, and voiceover into JianyingPro drafts you can keep refining in the app. Reads and writes draft files through the local videoeditor.dll without simulating mouse input or uploading media; ships 71 MCP tools for drafts, segments, subtitles, transitions, keyframes, voiceover, transcription, and export, plus asset tagging and editing-pipeline skills.",
+    "developerName": "YeQingping",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "List my JianyingPro drafts",
+      "Turn this clip folder into a JianyingPro draft in script order",
+      "Shorten shot 2 by half a second and add a 0.5s dissolve"
+    ],
+    "brandColor": "#1F6FEB"
+  }
+}

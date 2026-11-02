@@ -8,6 +8,9 @@
   3) 项目级安装：写 .codex/config.toml（MCP 服务器）+ 技能到 .agents/skills 与 .codex/skills
   4) 全局安装（尽力而为）：同样的配置写进 %USERPROFILE%\.codex，让所有项目都能用
 
+插件模式（-PluginMode）下第 3、4 步由 Codex 插件宿主完成，本脚本只准备运行时：
+运行时目录（默认 %USERPROFILE%\.jianying-kit）里放 .venv、jianying-paths.json 与 runtime.json。
+
 用法：
   powershell -ExecutionPolicy Bypass -File install.ps1              # 完整安装
   powershell -ExecutionPolicy Bypass -File install.ps1 -DryRun      # 只显示会做什么
@@ -16,6 +19,7 @@
   powershell -ExecutionPolicy Bypass -File install.ps1 -PythonExe "C:\Python313\python.exe"
   powershell -ExecutionPolicy Bypass -File install.ps1 -Portable    # 强制用工具包内可移植 Python
   powershell -ExecutionPolicy Bypass -File install.ps1 -PathsOnly   # 只重新探测剪映路径并更新配置（剪映重装后用）
+  powershell -ExecutionPolicy Bypass -File install.ps1 -PluginMode  # Codex 插件模式：环境装到用户目录，不写宿主配置
 #>
 param(
     [switch]$DryRun,
@@ -25,19 +29,42 @@ param(
     [switch]$Portable,
     [switch]$PathsOnly,
     [string]$JianyingBase,
-    [string]$DraftRoot
+    [string]$DraftRoot,
+    [switch]$PluginMode,
+    [string]$RuntimeRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $kit = $PSScriptRoot
-$venvDir = Join-Path $kit '.venv'
+
+# ---------- 运行目录 ----------
+# 独立模式：环境与路径文件都放在工具包目录里（老行为）。
+# 插件模式（-PluginMode）：插件目录只放代码，环境落到用户级目录，
+#   默认 %USERPROFILE%\.jianying-kit（可用 JIANYING_KIT_HOME 或 -RuntimeRoot 覆盖）。
+$runtimeDir = $kit
+if ($PluginMode) {
+    $runtimeDir = if ($RuntimeRoot) {
+        $RuntimeRoot
+    } elseif ($env:JIANYING_KIT_HOME) {
+        $env:JIANYING_KIT_HOME
+    } else {
+        Join-Path $env:USERPROFILE '.jianying-kit'
+    }
+} elseif ($RuntimeRoot) {
+    throw "-RuntimeRoot 只在 -PluginMode 下有意义"
+}
+
+$venvDir = Join-Path $runtimeDir '.venv'
 $venvPy = Join-Path $venvDir 'Scripts\python.exe'
-$portableDir = Join-Path $kit '.runtime\python'
+$portableDir = Join-Path $runtimeDir '.runtime\python'
 $portablePy = Join-Path $portableDir 'tools\python.exe'
 $pipLogPath = Join-Path $kit 'install-pip.log'
-$pathsJson = Join-Path $kit 'jianying-paths.json'
+$pathsJson = Join-Path $runtimeDir 'jianying-paths.json'
+$runtimeJson = Join-Path $runtimeDir 'runtime.json'
 $userBase = $env:USERPROFILE
 $Script:McpEnv = @{}
+$Script:DetectedPaths = @{}
+$Script:PluginMode = [bool]$PluginMode
 
 # 统一 UTF-8 输出，避免中文草稿名 / 中文路径在控制台乱码
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -322,6 +349,7 @@ function Find-JianyingDraftRoot {
 
 Write-Host "== 剪映自动化工具包 · 安装器 ==" -ForegroundColor Cyan
 Write-Host "工具包目录 : $kit"
+if ($PluginMode) { Write-Host "运行目录   : $runtimeDir（插件模式）" -ForegroundColor DarkGray }
 Write-Host "虚拟环境   : $venvDir"
 if ($DryRun) { Write-Host "模式       : DryRun（不改动任何文件）" -ForegroundColor Yellow }
 Write-Host ""
@@ -508,6 +536,7 @@ if ($jyDraft) {
 $paths = [ordered]@{}
 if ($jy) { $paths['JIANYING_INSTALL_ROOT'] = $jy.InstallRoot; $paths['JY_INSTALL_DIR'] = $jy.CodecDir }
 if ($jyDraft) { $paths['JIANYING_DRAFT_ROOT'] = $jyDraft }
+$Script:DetectedPaths = $paths
 
 # 非默认路径必须写进 MCP 配置，否则重启后 MCP 服务找不到剪映
 if ($jy -and ($jy.InstallRoot -ne $defaultInstallRoot)) {
@@ -558,6 +587,10 @@ if ($DryRun -or (-not (Test-Path -LiteralPath $venvPy))) {
 function Install-Scope {
     param([string]$Root, [string]$Label, [switch]$Required, [switch]$EnvOnly)
     try {
+        if ($Script:PluginMode) {
+            Write-Ok "插件模式：宿主负责 MCP 服务器与技能注册，跳过 $Label 配置写入"
+            return $true
+        }
         $codexDir = Join-Path $Root '.codex'
         $configPath = Join-Path $codexDir 'config.toml'
         if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $codexDir | Out-Null }
@@ -684,16 +717,44 @@ if ($PathsOnly) {
 }
 
 # ---------- 收尾 ----------
+# ---------- 运行时清单 + 收尾 ----------
+if (-not $DryRun) {
+    $runtimeInfo = [ordered]@{
+        python          = $venvPy
+        runtime_root    = $runtimeDir
+        plugin_root     = $kit
+        kit_root        = $kit
+        plugin_mode     = [bool]$PluginMode
+        detected_at     = (Get-Date).ToString('s')
+        jianying_paths  = $Script:DetectedPaths
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+        [System.IO.File]::WriteAllText($runtimeJson, ($runtimeInfo | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+        if ($PluginMode) { Write-Ok "运行时清单已写入：$runtimeJson" }
+    } catch {
+        Write-Warn2 "写 runtime.json 失败：$($_.Exception.Message)"
+    }
+}
+
 Write-Host ""
 Write-Host "== 完成 ==" -ForegroundColor Cyan
-if (-not $userOk) {
+if ($PluginMode) {
+    Write-Host "插件模式：运行时就绪，MCP 服务器与技能由宿主加载。" -ForegroundColor Green
+} elseif (-not $userOk) {
     Write-Host "全局安装被拒绝（AI 在沙盒里跑时正常）。请你自己在普通 PowerShell 里跑一次这条命令：" -ForegroundColor Yellow
     Write-Host "  powershell -ExecutionPolicy Bypass -File `"$kit\install.ps1`" -SkipPip" -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "下一步：" -ForegroundColor Cyan
-Write-Host "  1. 完全退出并重启 Codex 桌面端（MCP 与技能在启动时加载）"
-Write-Host "  2. 在 Codex 里打开本工具包目录（或你自己的工作目录）"
-Write-Host "  3. 直接说：`"列出我的剪映草稿`" 验证 MCP 是否可用"
+if ($PluginMode) {
+    Write-Host "  1. 完全退出并重启 Codex 桌面端（MCP 在启动时加载）"
+    Write-Host "  2. 直接说：`"列出我的剪映草稿`" 验证 MCP 是否可用"
+    Write-Host "  3. 剪映重装或换位置后，重跑本命令的 -PathsOnly 更新路径"
+} else {
+    Write-Host "  1. 完全退出并重启 Codex 桌面端（MCP 与技能在启动时加载）"
+    Write-Host "  2. 在 Codex 里打开本工具包目录（或你自己的工作目录）"
+    Write-Host "  3. 直接说：`"列出我的剪映草稿`" 验证 MCP 是否可用"
+}
 Write-Host ""
 Write-Host "注意：改草稿前先在剪映里退出该草稿，否则剪映内存里的版本会覆盖脚本的修改。" -ForegroundColor Yellow

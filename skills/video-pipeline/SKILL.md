@@ -7,19 +7,21 @@ description: 把剧本/分镜和素材组装成剪映草稿：生成分镜表 JS
 
 和 `analyze-video` 是配套技能：先用它给素材打标，再用本技能选片排片。
 
-## 依赖路径
+## 路径解析
+
+本 Skill 所在目录向上两层即插件根（记为 `<root>`）；宿主提供了
+`${CLAUDE_PLUGIN_ROOT}` 时也可直接用它。运行时信息在 `%USERPROFILE%\.jianying-kit\runtime.json`：
 
 ```powershell
-$py   = "__KIT_ROOT__\.venv\Scripts\python.exe"
-$tool = "__KIT_ROOT__\tools\build_draft.py"
+$rt   = Get-Content "$env:USERPROFILE\.jianying-kit\runtime.json" -Raw | ConvertFrom-Json
+$py   = $rt.python
+$tool = "<root>\tools\build_draft.py"
 ```
 
-草稿目录：`%LOCALAPPDATA%\JianyingPro\User Data\Projects\com.lveditor.draft`
-
-> **剪映不在默认位置时**：安装器会把探测到的实际路径写进 `__KIT_ROOT__\jianying-paths.json`
-> （`JIANYING_INSTALL_ROOT` / `JY_INSTALL_DIR` / `JIANYING_DRAFT_ROOT`）。
-> `build_draft.py` 和 `subtitle_tools.py` 会自动读取它；如果你直接调 `jianying_tool.cli`，
-> 先按这个文件里的值设置同名环境变量，否则工具会去找默认路径。
+`runtime.json` 不存在时先跑 `setup` 技能。`<root>` 只放代码；`.venv` 与
+`jianying-paths.json` 在运行时目录里，后者记录探测到的剪映路径
+（`JIANYING_INSTALL_ROOT` / `JY_INSTALL_DIR` / `JIANYING_DRAFT_ROOT`），
+`build_draft.py` 和 `subtitle_tools.py` 会自动读取，草稿命名与建草稿前先读它确认草稿目录。
 
 ## 流程
 

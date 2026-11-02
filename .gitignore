@@ -1,6 +1,7 @@
 # Python 环境与运行时（安装器生成）
 .venv/
 .runtime/
+.jianying-kit/
 __pycache__/
 *.py[cod]
 install-pip.log
@@ -8,10 +9,12 @@ install-pip.log
 
 # 安装器生成的本机路径探测结果
 jianying-paths.json
+runtime.json
 
 # 安装器生成的项目级配置与技能副本
 .codex/
-.agents/
+.agents/skills/
+# 插件 marketplace 清单（.agents/plugins/marketplace.json）要入库，不要忽略
 
 # 运行过程中产生的工作产物
 shotlists/

@@ -1,0 +1,20 @@
+{
+  "name": "jianying-kit",
+  "interface": {
+    "displayName": "Jianying Kit"
+  },
+  "plugins": [
+    {
+      "name": "jianying-kit",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

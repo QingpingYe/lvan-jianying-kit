@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "jianying": {
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/s",
+        "/c",
+        "call",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/launch_mcp.cmd",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/launch_mcp.ps1"
+      ],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}",
+      "startup_timeout_sec": 120
+    }
+  }
+}

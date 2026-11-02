@@ -1,15 +1,18 @@
-# 剪映自动化工具包
+# 剪映自动化（Codex 插件）
 
-让 ChatGPT / Codex 桌面端用自然语言指挥剪映专业版做自动化剪辑：
+<!-- readme-check -->
+
+让 Codex 桌面端用自然语言指挥剪映专业版做自动化剪辑：
 **剧本 + AI 生成的视频片段 → 带字幕、BGM 的剪映草稿 → 你在剪映里精修导出。**
 
 > 📖 **完整文档见 [使用说明.md](使用说明.md)** —— 安装、使用、常见问题、已知限制都在里面。
 
 ## 怎么用（三步）
 
-1. **把这个文件夹放到本机**（推荐 D 盘或其它非系统盘的短路径，如 `D:\jianying-kit`；放哪都行，安装器不写死路径，但别放 OneDrive / 下载 / 桌面）。
-2. **在 Codex 桌面端里打开这个文件夹**，信任该项目。
-3. **发送 `BOOTSTRAP.md` 里那段固定提示词**，剩下的交给 AI。
+1. **安装插件**：在 Codex 桌面端打开 Plugins 侧栏，添加本仓库的 marketplace（仓库根目录的 `.agents/plugins/marketplace.json`），安装 `Jianying Kit`；也可让 Codex 打开本目录后手动注册（见「不用插件」一节）。
+2. **首次使用会自动引导**：装好后直接说一句和剪映有关的话（例如「列出我的剪映草稿」），
+   Codex 会运行插件自带的 `setup` 技能：建 Python 运行环境、装依赖、探测剪映与草稿目录。
+3. **重启一次**：setup 完成后完全退出并重启 Codex 桌面端，MCP 工具与技能才会挂上。
 
 装完**完全重启 Codex**，然后说「列出我的剪映草稿」验证。
 
@@ -27,7 +30,6 @@
 - 「第 2 镜缩短半秒」「给第 4 段加 0.5 秒叠化」
 - 「字幕改成居中、字号加大」
 - 「给这一集配个旁白，用女声」
-- 「分析一下这个素材文件夹，标出每个片段能用在什么地方」
 
 ## 手动安装（不依赖 AI）
 
@@ -37,15 +39,38 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 参数：`-DryRun`（只看会做什么）、`-SkipPip`（跳过装依赖）、`-NoUserScope`（只装项目级）。
 
+## 不用插件（独立安装）
+
+插件宿主不方便用时，也可以把仓库当作原来的工具包直接用：让 Codex 打开本目录读
+[BOOTSTRAP.md](BOOTSTRAP.md)，或自己跑下面这条命令。独立模式沿用老行为 ——
+环境建在仓库的 `.venv`，并往 `.codex/config.toml` 写 MCP 配置、往
+`.agents/skills` 与 `.codex/skills` 拷技能。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+插件模式（只准备运行时，不写宿主配置）用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -PluginMode
+```
+
+改过插件文件之后，可以先跑一次结构自检（只读，不写任何文件）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate_plugin.ps1
+```
+
 ## 常见问题
 
-**Q：AI 说写 `~/.codex` 被拒绝了？**
+**Q：setup 说写用户目录被拒绝了？**
 那是我（AI）在沙盒里跑的结果，正常。你自己在普通 PowerShell 里跑一次
 `install.ps1 -SkipPip` 即可完成全局安装。
 
 **Q：重启后还是不能列出草稿？**
-确认 Codex 是**完全退出**再打开的；确认 `install.ps1` 输出里 MCP 配置写入成功；
-再不行把 `~/.codex/config.toml` 里的 `[mcp_servers.jianying]` 段发给 AI 排错。
+确认 Codex 是**完全退出**再打开的；确认 `%USERPROFILE%\.jianying-kit\runtime.json` 存在；
+再不行让 AI 跑一次插件自带的 `setup` 技能排错。
 
 **Q：能装到别人的电脑上吗？**
 可以。整个文件夹拷过去（或打包 zip），按上面三步走即可；每台机器各自建 `.venv`，互不影响。

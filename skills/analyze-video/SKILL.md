@@ -9,11 +9,17 @@ description: 对本地视频素材批量抽帧、生成联系表并逐条打标�
 
 ## 依赖路径
 
+本 Skill 所在目录向上两层即插件根（记为 `<root>`）——素材索引写在用户的工作目录里，
+不写插件目录。运行时信息在 `%USERPROFILE%\.jianying-kit\runtime.json`：
+
 ```powershell
-$py = "__KIT_ROOT__\.venv\Scripts\python.exe"
+$rt = Get-Content "$env:USERPROFILE\.jianying-kit\runtime.json" -Raw | ConvertFrom-Json
+$py = $rt.python
 # ffmpeg 路径随版本变化，用下面这行现取，不要写死
 & $py -c "import imageio_ffmpeg,sys; sys.stdout.write(imageio_ffmpeg.get_ffmpeg_exe())"
 ```
+
+`runtime.json` 不存在时先跑 `setup` 技能。
 
 环境里还有 `av`（读元数据）、`Pillow`（拼图）、`faster-whisper`（转写，需另下模型）。
 
