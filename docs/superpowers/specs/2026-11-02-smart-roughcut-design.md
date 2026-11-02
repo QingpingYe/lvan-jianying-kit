@@ -21,6 +21,11 @@
 edit plan 为唯一事实源、拿不准不猜进「待确认」、原素材只读、注册草稿前先校验；
 RoughCut 的「编辑即数据、可撤销」思路。同类思路的完整清单见对话记录（2026-11-02）。
 
+剪辑决策依据：《AI 短剧粗剪决策规则集 v0.1》
+（`docs/superpowers/specs/2026-11-02-ai-short-drama-roughcut-rules-v0.1.md`）：
+评分权重、裁切与转场规则、节奏与结构模板、自检清单都在那里定义，本篇不再重复；
+实现阶段该文件移入 `skills/rough-cut/references/`。
+
 ## 2. 目标
 
 1. 一集素材（+ 剧本/分镜，可选）进，出两份产物：`roughcut.json`（剪辑决策表，edit plan）+ `roughcut.md`（人读报告）。
@@ -214,6 +219,7 @@ jianying-kit/
 
 硬规则：不许无 evidence 硬猜；不确定进 `unresolved` / `review`；不许跳过 validate；
 原素材只读；改草稿前确认剪映已退出目标草稿。
+决策与自检按《AI 短剧粗剪决策规则集 v0.1》执行（见 §1 引用）。
 
 ## 13. 命名推断细则（核心难点）
 
