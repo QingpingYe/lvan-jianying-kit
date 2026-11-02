@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
@@ -82,6 +83,31 @@ def make_template_draft(
 def relative_files(folder: Path) -> list[str]:
     """目录下的相对文件清单，用来断言"复制没有多出/少掉文件"。"""
     return sorted(str(path.relative_to(folder)) for path in folder.rglob("*") if path.is_file())
+
+
+def make_ambiguous_text_tracks_draft(root: Path, name: str = "模板") -> Path:
+    """造一个含两条同名文本轨的草稿（库不允许建同名轨道，改盘上名字来构造）。"""
+    script = draft.DraftFolder(str(root)).create_draft(name, 1080, 1920, fps=30)
+    script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
+    script.add_segment(
+        draft.VideoSegment(fake_video_material(), draft.trange("0s", "2s")), "main_video"
+    )
+    refs = script.append_tracks([
+        draft.TrackSpec(draft.TrackType.text, "text"),
+        draft.TrackSpec(draft.TrackType.text, "subtitle"),
+        draft.TrackSpec(draft.TrackType.effect, "fx"),
+    ])
+    script.add_segment(draft.TextSegment("甲", draft.trange("0s", "2s")), refs[0])
+    script.add_segment(draft.TextSegment("乙", draft.trange("0s", "2s")), refs[1])
+    script.save()
+    content_path = root / name / "draft_content.json"
+    content = json.loads(content_path.read_text(encoding="utf-8"))
+    for track in content["tracks"]:
+        if track.get("name") == "subtitle":
+            track["name"] = "text"
+    content_path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    write_draft_meta_info(root / name, root=root)
+    return root / name
 
 
 class DuplicateTests(unittest.TestCase):
@@ -164,28 +190,7 @@ class SlotTests(unittest.TestCase):
     def test_marks_unmodifiable_tracks_and_ambiguous_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            script = draft.DraftFolder(str(root)).create_draft("模板", 1080, 1920, fps=30)
-            script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
-            script.add_segment(
-                draft.VideoSegment(fake_video_material(), draft.trange("0s", "2s")), "main_video"
-            )
-            refs = script.append_tracks([
-                draft.TrackSpec(draft.TrackType.text, "text"),
-                draft.TrackSpec(draft.TrackType.text, "subtitle"),
-                draft.TrackSpec(draft.TrackType.effect, "fx"),
-            ])
-            script.add_segment(draft.TextSegment("甲", draft.trange("0s", "2s")), refs[0])
-            script.add_segment(draft.TextSegment("乙", draft.trange("0s", "2s")), refs[1])
-            script.save()
-            # 库不允许建同名轨道，但剪映里允许存在；直接改盘上的轨道名来构造这个场景
-            content_path = root / "模板" / "draft_content.json"
-            content = json.loads(content_path.read_text(encoding="utf-8"))
-            for track in content["tracks"]:
-                if track.get("name") == "subtitle":
-                    track["name"] = "text"
-            content_path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
-            write_draft_meta_info(root / "模板", root=root)
-
+            make_ambiguous_text_tracks_draft(root)
             tracks = jy_template.list_slots(root, "模板")["tracks"]
             text_tracks = [track for track in tracks if track["type"] == "text"]
             self.assertEqual(len(text_tracks), 2)
@@ -195,6 +200,239 @@ class SlotTests(unittest.TestCase):
             effects = [track for track in tracks if track["type"] == "effect"]
             self.assertEqual(len(effects), 1)
             self.assertFalse(effects[0]["replaceable"])
+
+
+class ApplyRowTests(unittest.TestCase):
+    """单行替换：素材、文案、时长策略、失败路径与跨草稿搬轨道。"""
+
+    def setUp(self) -> None:
+        self._durations: dict[str, int] = {}
+        self._serial = 0
+        patcher = mock.patch.object(jy_template, "_load_video_material", self._fake_material)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fake_material(self, path: Path) -> VideoMaterial:
+        self._serial += 1
+        name = Path(path).name
+        return fake_video_material(
+            material_id=f"new-material-{self._serial}",
+            material_name=name,
+            path=str(path),
+            duration=self._durations.get(name, 5_000_000),
+        )
+
+    def media(self, folder: Path, name: str, duration_us: int = 5_000_000) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        path.write_bytes(b"fake-media")
+        self._durations[name] = duration_us
+        return path
+
+    def content(self, root: Path, name: str) -> dict:
+        return json.loads((root / name / "draft_content.json").read_text(encoding="utf-8"))
+
+    def test_replace_by_name_updates_every_referencing_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = draft.DraftFolder(str(root)).create_draft("模板", 1080, 1920, fps=30)
+            script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
+            shared = fake_video_material(material_name="占位.mp4", duration=5_000_000)
+            script.add_segment(draft.VideoSegment(shared, draft.trange("0s", "1s")), "main_video")
+            script.add_segment(draft.VideoSegment(shared, draft.trange("1s", "1s")), "main_video")
+            script.save()
+            write_draft_meta_info(root / "模板", root=root)
+            jy_template.duplicate(root, "模板", "第1集")
+
+            new_video = self.media(root / "素材", "新.mp4")
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {"name": "第1集", "materials": {"by_name": {"占位.mp4": str(new_video)}}},
+                base_dir=root,
+            )
+
+            content = self.content(root, "第1集")
+            videos = content["materials"]["videos"]
+            by_id = {item["id"]: item for item in videos}
+            self.assertFalse(any(item["path"] == r"E:\素材\占位.mp4" for item in videos))
+            segments = content["tracks"][0]["segments"]
+            self.assertEqual(len(segments), 2)
+            for segment in segments:
+                self.assertEqual(Path(by_id[segment["material_id"]]["path"]), new_video)
+            self.assertEqual(report["replaced"]["by_name"], 1)
+            leftovers = [p.name for p in (root / "第1集").iterdir() if p.name.startswith(".draft_content.")]
+            self.assertEqual(leftovers, [])
+
+    def test_replace_by_slot_reselects_the_source_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            jy_template.duplicate(root, "模板", "第1集")
+            new_video = self.media(root / "素材", "新.mp4", 5_000_000)
+
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {
+                    "name": "第1集",
+                    "materials": {
+                        "by_slot": [
+                            {
+                                "track": "main_video",
+                                "segment": 0,
+                                "file": str(new_video),
+                                "source_start": 1.0,
+                                "duration": 1.5,
+                            }
+                        ]
+                    },
+                },
+                base_dir=root,
+            )
+
+            segment = self.content(root, "第1集")["tracks"][0]["segments"][0]
+            self.assertEqual(segment["source_timerange"]["start"], 1_000_000)
+            self.assertEqual(segment["source_timerange"]["duration"], 1_500_000)
+            self.assertEqual(segment["target_timerange"]["duration"], 1_500_000)
+            self.assertEqual(report["replaced"]["by_slot"], 1)
+
+    def test_shorter_material_truncates_the_segment_and_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            jy_template.duplicate(root, "模板", "第1集")
+            short = self.media(root / "素材", "短.mp4", 1_000_000)
+
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {
+                    "name": "第1集",
+                    "materials": {
+                        "by_slot": [{"track": "main_video", "segment": 0, "file": str(short)}]
+                    },
+                },
+                base_dir=root,
+            )
+
+            segment = self.content(root, "第1集")["tracks"][0]["segments"][0]
+            self.assertEqual(segment["target_timerange"]["duration"], 1_000_000)
+            self.assertTrue(
+                any("main_video" in warning and "0" in warning for warning in report["warnings"]),
+                report["warnings"],
+            )
+
+    def test_text_replacement_keeps_the_style_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            before = json.loads(
+                self.content(root, "模板")["materials"]["texts"][0]["content"]
+            )
+            jy_template.duplicate(root, "模板", "第1集")
+            new_text = "全新的第一集标题"
+
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {"name": "第1集", "texts": {"title": [new_text]}},
+                base_dir=root,
+            )
+
+            material = self.content(root, "第1集")["materials"]["texts"][0]
+            body = json.loads(material["content"])
+            self.assertEqual(body["text"], new_text)
+            self.assertEqual(len(body["styles"]), len(before["styles"]))
+            self.assertEqual(body["styles"][0]["range"], [0, len(new_text)])
+            self.assertEqual(report["replaced"]["texts"], 1)
+
+    def test_text_count_mismatch_fails_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板", texts=("第1集", "第2集"))
+            jy_template.duplicate(root, "模板", "第1集")
+            before = (root / "第1集" / "draft_content.json").read_bytes()
+
+            with self.assertRaises(jy_template.RowFailed) as caught:
+                jy_template.apply_row(
+                    root,
+                    {"template": "模板"},
+                    {"name": "第1集", "texts": {"title": ["只给一条"]}},
+                    base_dir=root,
+                )
+
+            self.assertIn("title", str(caught.exception))
+            self.assertEqual((root / "第1集" / "draft_content.json").read_bytes(), before)
+
+    def test_by_name_shorter_than_the_shortest_segment_fails_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            jy_template.duplicate(root, "模板", "第1集")
+            before = (root / "第1集" / "draft_content.json").read_bytes()
+            short = self.media(root / "素材", "短.mp4", 1_000_000)
+
+            with self.assertRaises(jy_template.RowFailed) as caught:
+                jy_template.apply_row(
+                    root,
+                    {"template": "模板"},
+                    {"name": "第1集", "materials": {"by_name": {"占位.mp4": str(short)}}},
+                    base_dir=root,
+                )
+
+            self.assertIn("by_slot", str(caught.exception))
+            self.assertEqual((root / "第1集" / "draft_content.json").read_bytes(), before)
+
+    def test_ambiguous_track_name_fails_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_ambiguous_text_tracks_draft(root)
+            jy_template.duplicate(root, "模板", "第1集")
+
+            with self.assertRaises(jy_template.RowFailed) as caught:
+                jy_template.apply_row(
+                    root,
+                    {"template": "模板"},
+                    {"name": "第1集", "texts": {"text": ["甲改了", "乙改了"]}},
+                    base_dir=root,
+                )
+
+            self.assertIn("text", str(caught.exception))
+
+    def test_import_track_copies_the_track_and_its_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            target_script = draft.DraftFolder(str(root)).create_draft("目标", 1080, 1920, fps=30)
+            target_script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
+            target_script.add_segment(
+                draft.VideoSegment(fake_video_material(), draft.trange("0s", "1s")), "main_video"
+            )
+            target_script.save()
+            write_draft_meta_info(root / "目标", root=root)
+
+            report = jy_template.import_track(root, "模板", "目标", "title")
+
+            self.assertTrue(report["imported"])
+            content = self.content(root, "目标")
+            imported = next(track for track in content["tracks"] if track["name"] == "title")
+            self.assertEqual(len(imported["segments"]), 1)
+            text_ids = {item["id"] for item in content["materials"]["texts"]}
+            self.assertIn(imported["segments"][0]["material_id"], text_ids)
+
+    def test_import_track_refuses_a_name_that_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            target_script = draft.DraftFolder(str(root)).create_draft("目标", 1080, 1920, fps=30)
+            target_script.append_tracks([draft.TrackSpec(draft.TrackType.text, "title")])
+            target_script.add_segment(draft.TextSegment("已有", draft.trange("0s", "1s")), "title")
+            target_script.save()
+            write_draft_meta_info(root / "目标", root=root)
+
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.import_track(root, "模板", "目标", "title")
 
 
 if __name__ == "__main__":

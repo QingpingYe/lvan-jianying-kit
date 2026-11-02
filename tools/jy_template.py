@@ -11,10 +11,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from jianying_tool.metadata import write_draft_meta_info
 from jianying_tool.inspect import inspect_draft
@@ -162,4 +164,407 @@ def list_slots(root: Path, draft: str) -> dict[str, Any]:
             }
             for track in tracks
         ],
+    }
+
+
+# --------------------------------------------------------------------------
+# 单行替换
+# --------------------------------------------------------------------------
+
+
+def _media_path(base_dir: Path, value: str) -> Path:
+    """素材路径：绝对路径照用，相对路径按清单所在目录解析。"""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _load_video_material(path: Path):
+    """读一个本地视频/图片素材（探时长与尺寸）。测试里会被换成假素材。"""
+    from pyJianYingDraft import VideoMaterial
+
+    return VideoMaterial(str(path))
+
+
+def _write_shadow(project: Path, content: dict[str, Any]) -> Path:
+    """把明文内容写成影子文件：pyJianYingDraft 只认明文 JSON。"""
+    shadow = project / f".draft_content.jy-template-{uuid4().hex}.json"
+    shadow.write_text(json.dumps(content, ensure_ascii=False, indent=4), encoding="utf-8")
+    return shadow
+
+
+def _load_template_script(shadow: Path):
+    from pyJianYingDraft.script_file import ScriptFile
+
+    return ScriptFile._load_template(str(shadow))
+
+
+def _edit_with_shadow(project: Path, operation) -> None:
+    """在影子明文文件上改草稿，成功后按原格式（可能是密文）写回，最后删影子。"""
+    content, _ = read_draft(project.parent, project.name)
+    shadow = _write_shadow(project, content)
+    try:
+        script = _load_template_script(shadow)
+        operation(script)
+        script.save()
+        updated = json.loads(shadow.read_text(encoding="utf-8"))
+        _prune_dangling_text_refs(updated)
+        write_draft(project.parent, project.name, updated)
+    finally:
+        shadow.unlink(missing_ok=True)
+
+
+def _prune_dangling_text_refs(content: dict[str, Any]) -> None:
+    """删掉文本片段里指向不存在素材的附加引用。
+
+    pyJianYingDraft 给每个片段的 ``extra_material_refs`` 都塞了一个 speed id，
+    但文本片段并不会把对应素材写进 ``materials.speeds``，于是留下一个悬空引用：
+    doctor 会当成"素材缺失"报出来，跨草稿搬轨道时还会让库自己断言失败。
+    当前剪映的文本片段不需要 speed 素材，直接丢掉是安全的（与 jianying_tool
+    处理 SRT 导入后的清理规则一致）。
+    """
+    known = _material_ids(content)
+    for track in content.get("tracks") or []:
+        if track.get("type") not in {"text", "subtitle"}:
+            continue
+        for segment in track.get("segments") or []:
+            refs = segment.get("extra_material_refs")
+            if isinstance(refs, list):
+                segment["extra_material_refs"] = [ref for ref in refs if ref in known]
+
+
+def _material_ids(content: dict[str, Any]) -> set[str]:
+    """草稿里所有素材条目的 id。"""
+    ids: set[str] = set()
+    for pool in (content.get("materials") or {}).values():
+        if isinstance(pool, list):
+            ids.update(item["id"] for item in pool if isinstance(item, dict) and item.get("id"))
+    return ids
+
+
+def _segment_reference_ids(segments: Any) -> set[str]:
+    """一组片段引用到的素材 id（本体 + 附加引用）。"""
+    ids: set[str] = set()
+    for segment in segments or []:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("material_id"):
+            ids.add(segment["material_id"])
+        ids.update(segment.get("extra_material_refs") or [])
+    return ids
+
+
+def _track_type_of(content: dict[str, Any], track_name: str) -> str:
+    """按轨道名取类型；不存在或同名不同类型都报错。"""
+    matches = sorted({
+        str(track.get("type"))
+        for track in content.get("tracks") or []
+        if track.get("name") == track_name
+    })
+    if not matches:
+        raise TemplateError(f"轨道不存在：{track_name}")
+    if len(matches) > 1:
+        raise TemplateError(f"同名轨道类型不一致：{track_name}（{', '.join(matches)}）")
+    return matches[0]
+
+
+def _find_text_track(content: dict[str, Any], track_name: str) -> dict[str, Any]:
+    """按名字取唯一的文本轨。"""
+    matches = [
+        track for track in content.get("tracks") or [] if track.get("name") == track_name
+    ]
+    if not matches:
+        raise TemplateError(f"轨道不存在：{track_name}")
+    if len(matches) > 1:
+        raise TemplateError(f"轨道名不唯一（{len(matches)} 条）：{track_name}")
+    if matches[0].get("type") != "text":
+        raise TemplateError(f"轨道 {track_name} 不是文本轨（{matches[0].get('type')}）")
+    return matches[0]
+
+
+def _shortest_span(content: dict[str, Any], material_name: str) -> int | None:
+    """引用该素材名的片段里最短的片段时长（微秒）；没有片段引用则 None。"""
+    ids = {
+        item.get("id")
+        for item in (content.get("materials") or {}).get("videos") or []
+        if item.get("material_name") == material_name
+    }
+    if not ids:
+        return None
+    spans = [
+        int((segment.get("target_timerange") or {}).get("duration") or 0)
+        for track in content.get("tracks") or []
+        for segment in track.get("segments") or []
+        if segment.get("material_id") in ids
+    ]
+    return min(spans) if spans else None
+
+
+def _source_timerange(source_start: Any, duration: Any):
+    """把清单里的秒数取用范围换算成 Timerange；两个都缺省时返回 None。"""
+    if source_start is None and duration is None:
+        return None
+    if duration is None:
+        raise TemplateError("by_slot 指定了 source_start 就必须同时给 duration")
+    from pyJianYingDraft.time_util import Timerange
+
+    return Timerange(
+        int(round(float(source_start or 0.0) * SEC)),
+        int(round(float(duration) * SEC)),
+    )
+
+
+def _slot_key(track_type: str | None, track_name: str, index: int) -> str:
+    kind = "text" if track_type == "text" else "material"
+    return f"{track_name}[{index}]:{kind}"
+
+
+def _unfilled_slots(content: dict[str, Any], covered: set[str]) -> list[str]:
+    """列出清单没有覆盖到的槽位，提醒用户哪些地方还留着模板原样。"""
+    unfilled: list[str] = []
+    for track in content.get("tracks") or []:
+        track_type = track.get("type")
+        if track_type not in {"video", "audio", "text"}:
+            continue
+        for index, _segment in enumerate(track.get("segments") or []):
+            key = _slot_key(track_type, str(track.get("name")), index)
+            if key not in covered:
+                unfilled.append(key)
+    return sorted(unfilled)
+
+
+def _covered_slots(
+    content: dict[str, Any],
+    by_name: set[str],
+    by_slot: list[dict[str, Any]],
+    texts: dict[str, list[Any]],
+) -> set[str]:
+    """清单覆盖到的槽位集合，用来算 unfilled_slots。"""
+    covered: set[str] = set()
+    if by_name:
+        named_ids = {
+            item.get("id")
+            for item in (content.get("materials") or {}).get("videos") or []
+            if item.get("material_name") in by_name
+        }
+        for track in content.get("tracks") or []:
+            for index, segment in enumerate(track.get("segments") or []):
+                if segment.get("material_id") in named_ids:
+                    covered.add(_slot_key(track.get("type"), str(track.get("name")), index))
+    for item in by_slot:
+        track_name = str(item["track"])
+        covered.add(
+            _slot_key(
+                _track_type_of(content, track_name), track_name, int(item["segment"])
+            )
+        )
+    for track_name in texts:
+        track = _find_text_track(content, str(track_name))
+        for index, _segment in enumerate(track.get("segments") or []):
+            covered.add(_slot_key("text", str(track_name), index))
+    return covered
+
+
+def _enum_member(enum_cls, value: str, field: str):
+    """把清单里的字符串映射到 pyJianYingDraft 的策略枚举；非法值直接报错。"""
+    try:
+        return enum_cls[value]
+    except KeyError as exc:
+        allowed = ", ".join(member.name for member in enum_cls)
+        raise TemplateError(f"{field} 取值不支持：{value}（可选 {allowed}）") from exc
+
+
+def apply_row(
+    root: Path, plan: dict[str, Any], row: dict[str, Any], *, base_dir: Path
+) -> dict[str, Any]:
+    """把清单里的一行套用到目标草稿上（目标草稿必须已经存在）。
+
+    先做只读预检（素材存在、轨道可解析、文案条数对得上、按名字替换不会截短片段），
+    再在影子明文文件上一次性完成替换；任何一步失败都不会留下改了一半的草稿。
+    """
+    root = resolve_root(root)
+    name = row.get("name")
+    if not name:
+        raise RowFailed("(未命名)", "清单行缺少 name")
+    name = str(name)
+    project = _project(root, name)
+    content, _ = read_draft(root, name)
+
+    defaults = plan.get("defaults") or {}
+    materials = row.get("materials") or {}
+    by_name = materials.get("by_name") or {}
+    by_slot = materials.get("by_slot") or []
+    texts = row.get("texts") or {}
+
+    replaced = {"by_name": 0, "by_slot": 0, "texts": 0}
+    warnings: list[str] = []
+
+    try:
+        loaded_by_name: list[tuple[str, Any]] = []
+        for material_name, value in by_name.items():
+            path = _media_path(base_dir, str(value))
+            if not path.is_file():
+                raise TemplateError(f"素材不存在：{path}")
+            material = _load_video_material(path)
+            if getattr(material, "material_type", "video") != "photo":
+                span = _shortest_span(content, str(material_name))
+                if span is None:
+                    raise TemplateError(f"没有片段引用名为 {material_name} 的视频素材")
+                if int(material.duration) < span:
+                    raise TemplateError(
+                        f"新素材 {material.material_name} 时长 {material.duration / SEC:.3f}s"
+                        f" 短于引用它的片段 {span / SEC:.3f}s；按名字替换不改片段时长，"
+                        f"请改用 by_slot 指定取用范围"
+                    )
+            loaded_by_name.append((str(material_name), material))
+
+        resolved_slots: list[dict[str, Any]] = []
+        for item in by_slot:
+            for field in ("track", "segment", "file"):
+                if item.get(field) is None:
+                    raise TemplateError(f"by_slot 缺少字段 {field}：{item}")
+            track_name = str(item["track"])
+            track_type = _track_type_of(content, track_name)
+            if not _replaceable(track_type):
+                raise TemplateError(f"轨道 {track_name}（{track_type}）不支持替换素材")
+            path = _media_path(base_dir, str(item["file"]))
+            if not path.is_file():
+                raise TemplateError(f"素材不存在：{path}")
+            resolved_slots.append(
+                {
+                    "track": track_name,
+                    "track_type": track_type,
+                    "segment": int(item["segment"]),
+                    "material": _load_video_material(path),
+                    "timerange": _source_timerange(item.get("source_start"), item.get("duration")),
+                }
+            )
+
+        resolved_texts: list[tuple[str, list[Any]]] = []
+        for track_name, values in texts.items():
+            if not isinstance(values, list):
+                raise TemplateError(f"texts.{track_name} 必须是数组")
+            track = _find_text_track(content, str(track_name))
+            count = len(track.get("segments") or [])
+            if len(values) != count:
+                raise TemplateError(
+                    f"文本轨 {track_name} 有 {count} 个片段，但给了 {len(values)} 条文案"
+                )
+            resolved_texts.append((str(track_name), list(values)))
+
+        def operation(script) -> None:
+            from pyJianYingDraft.template_mode import ExtendMode, ShrinkMode
+            from pyJianYingDraft.track import TrackType
+
+            shrink = _enum_member(ShrinkMode, defaults.get("shrink", "cut_tail"), "shrink")
+            extend = _enum_member(
+                ExtendMode, defaults.get("extend", "cut_material_tail"), "extend"
+            )
+            for material_name, material in loaded_by_name:
+                script.replace_material_by_name(material_name, material)
+                replaced["by_name"] += 1
+            for item in resolved_slots:
+                track = script.get_imported_track(
+                    TrackType[item["track_type"]], name=item["track"]
+                )
+                before = int(track.segments[item["segment"]].duration)
+                script.replace_material_by_seg(
+                    track,
+                    item["segment"],
+                    item["material"],
+                    item["timerange"],
+                    handle_shrink=shrink,
+                    handle_extend=extend,
+                )
+                after = int(track.segments[item["segment"]].duration)
+                replaced["by_slot"] += 1
+                if after != before:
+                    warnings.append(
+                        f"track '{item['track']}' 片段 {item['segment']} 时长由 "
+                        f"{before / SEC:.3f}s 调整为 {after / SEC:.3f}s"
+                    )
+            for track_name, values in resolved_texts:
+                track = script.get_imported_track(TrackType.text, name=track_name)
+                for index, value in enumerate(values):
+                    script.replace_text(track, index, value)
+                    replaced["texts"] += 1
+
+        _edit_with_shadow(project, operation)
+    except RowFailed:
+        raise
+    except TemplateError as exc:
+        raise RowFailed(name, str(exc)) from exc
+    except Exception as exc:  # 库抛的轨道/素材歧义、越界等，一律收敛成"该行失败"
+        raise RowFailed(name, f"{type(exc).__name__}: {exc}") from exc
+
+    covered = _covered_slots(content, set(by_name), by_slot, texts)
+    return {
+        "row": name,
+        "draft": str(project),
+        "replaced": replaced,
+        "warnings": warnings,
+        "unfilled_slots": _unfilled_slots(content, covered),
+    }
+
+
+def import_track(
+    root: Path,
+    source_draft: str,
+    target_draft: str,
+    track: str,
+    *,
+    offset: float = 0.0,
+    new_name: str | None = None,
+) -> dict[str, Any]:
+    """把源草稿里的一条轨道整条搬进目标草稿（素材条目随轨道一起过去）。
+
+    底层保留素材 id，且明确不支持向同一草稿重复导入同一条轨道：目标已存在同名轨道，
+    或已有同 id 素材时直接报错，不做静默改名或覆盖。
+    """
+    root = resolve_root(root)
+    source_project = _project(root, source_draft)
+    target_project = _project(root, target_draft)
+    target_content, _ = read_draft(root, target_draft)
+
+    imported_name = new_name or track
+    if any(item.get("name") == imported_name for item in target_content.get("tracks") or []):
+        raise TemplateError(f"目标草稿里已经有名为 {imported_name} 的轨道")
+
+    source_content, _ = read_draft(root, source_draft)
+    _prune_dangling_text_refs(source_content)
+    source_shadow = _write_shadow(source_project, source_content)
+    try:
+        source_script = _load_template_script(source_shadow)
+        candidates = [
+            item for item in source_script.list_imported_tracks() if item.name == track
+        ]
+        if not candidates:
+            raise TemplateError(f"源草稿 {source_draft} 里没有名为 {track} 的轨道")
+        if len(candidates) > 1:
+            raise TemplateError(f"源草稿里名为 {track} 的轨道有 {len(candidates)} 条")
+        chosen = candidates[0]
+        clash = _material_ids(target_content) & _segment_reference_ids(
+            chosen.raw_data.get("segments")
+        )
+        if clash:
+            raise TemplateError(
+                f"目标草稿里已存在同 id 的素材（{len(clash)} 个），同一条轨道不能重复导入"
+            )
+
+        def operation(script) -> None:
+            script.import_track(
+                source_script,
+                chosen,
+                offset=int(round(float(offset) * SEC)),
+                new_name=new_name,
+            )
+
+        _edit_with_shadow(target_project, operation)
+    finally:
+        source_shadow.unlink(missing_ok=True)
+
+    return {
+        "source": source_draft,
+        "target": target_draft,
+        "track": imported_name,
+        "imported": True,
     }
