@@ -1,0 +1,20 @@
+﻿{
+  "version": 1,
+  "episode": "第3集",
+  "source_root": "E:\\素材\\第3集",
+  "canvas": { "width": 1080, "height": 1920, "ratio": "9:16", "fps": 30 },
+  "shots": [
+    {
+      "shot": "05",
+      "script_ref": "第5镜：女主回头，看到桌上的信",
+      "segments": [{ "file": "03-05-02.mp4", "source_start": 0.4, "duration": 2.6 }],
+      "reason": "take02 人物一致、动作完整；take01 中段手部崩坏",
+      "confidence": 0.86,
+      "alternates": [{ "file": "03-05-01.mp4", "note": "中段手部崩坏" }],
+      "transition_out": { "type": "hard_cut" },
+      "effects": [],
+      "review": []
+    }
+  ],
+  "warnings": []
+}

@@ -40,9 +40,11 @@ Check-Json (Join-Path $root '.mcp.json')
 Check-Json (Join-Path $root '.agents\plugins\marketplace.json')
 Check-Json (Join-Path $root 'examples\shotlist.example.json')
 Check-Json (Join-Path $root 'examples\templatefill.example.json')
+Check-Json (Join-Path $root 'examples\roughcut-grouping.example.json')
+Check-Json (Join-Path $root 'examples\roughcut.example.json')
 
 # 模板批量出片的文件与 MCP 接线
-foreach ($file in @('tools\jy_template.py', 'tools\template_fill.py', 'mcp_ext\server.py')) {
+foreach ($file in @('tools\jy_template.py', 'tools\template_fill.py', 'tools\jy_roughcut.py', 'tools\roughcut.py', 'mcp_ext\server.py')) {
     $path = Join-Path $root $file
     if (Test-Path -LiteralPath $path) { Write-Host "OK    FILE  $file" -ForegroundColor Green }
     else { Write-Host "MISS  FILE  $file" -ForegroundColor Red; $fail++ }
@@ -69,7 +71,7 @@ foreach ($script in @('install.ps1', 'scripts\launch_mcp.ps1', 'scripts\validate
     $path = Join-Path $root $script
     if (Test-Path -LiteralPath $path) { Check-PsSyntax $path } else { Write-Host "MISS  PS    $script" -ForegroundColor Red; $fail++ }
 }
-foreach ($skill in @('setup', 'analyze-video', 'video-pipeline', 'template-batch')) {
+foreach ($skill in @('setup', 'analyze-video', 'video-pipeline', 'template-batch', 'rough-cut')) {
     $file = Join-Path $root "skills\$skill\SKILL.md"
     if (Test-Path -LiteralPath $file) { Write-Host "OK    SKILL $skill" -ForegroundColor Green }
     else { Write-Host "MISS  SKILL $skill" -ForegroundColor Red; $fail++ }

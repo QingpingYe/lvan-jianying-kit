@@ -9,7 +9,9 @@ $files = @(
     (Join-Path $root 'scripts\launch_mcp.ps1'),
     (Join-Path $root 'scripts\validate_plugin.ps1'),
     (Join-Path $root 'scripts\fix_bom.ps1'),
-    (Join-Path $root 'examples\templatefill.example.json')
+    (Join-Path $root 'examples\templatefill.example.json'),
+    (Join-Path $root 'examples\roughcut-grouping.example.json'),
+    (Join-Path $root 'examples\roughcut.example.json')
 )
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath $file)) { continue }

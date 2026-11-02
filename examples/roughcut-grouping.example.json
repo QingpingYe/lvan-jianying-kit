@@ -1,0 +1,18 @@
+﻿{
+  "version": 1,
+  "root": "E:\\素材\\第3集",
+  "scheme": "ep-shot-take",
+  "scheme_confidence": "high",
+  "evidence": "文件名形如 03-05-02.mp4：集(03)-镜(05)-take(02)；同镜编号连续",
+  "shots": [
+    {
+      "shot": "05",
+      "takes": [
+        { "take": "01", "kind": "single", "files": ["03-05-01.mp4"] },
+        { "take": "02", "kind": "single", "files": ["03-05-02.mp4"] }
+      ]
+    }
+  ],
+  "unresolved": [{ "file": "1.mp4", "reason": "纯序号无法判断镜号" }],
+  "excluded": []
+}
