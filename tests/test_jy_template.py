@@ -884,15 +884,22 @@ class CliTests(TempDraftCase):
 
 
 class McpExtTests(TempDraftCase):
-    """MCP 薄包装：注册了哪三个工具、返回什么、出错怎么抛。"""
+    """MCP 薄包装：注册了哪些工具、返回什么、出错怎么抛。"""
 
-    def test_build_server_registers_the_three_tools(self) -> None:
+    def test_build_server_registers_all_tools(self) -> None:
         from mcp_ext.server import build_server
 
         tools = asyncio.run(build_server().list_tools())
         self.assertEqual(
             {tool.name for tool in tools},
-            {"list_template_slots", "duplicate_local_draft", "import_local_track"},
+            {
+                "list_template_slots",
+                "duplicate_local_draft",
+                "import_local_track",
+                "scan_roughcut_folder",
+                "validate_roughcut_plan",
+                "build_roughcut_draft",
+            },
         )
 
     def test_duplicate_tool_returns_the_new_draft_path(self) -> None:
