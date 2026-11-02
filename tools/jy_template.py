@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from jianying_tool.metadata import write_draft_meta_info
+from jianying_tool.inspect import inspect_draft
 from jianying_tool.native_codec import decode_file, project_content_path, update_project_json
 from jianying_tool.paths import draft_root
 
@@ -92,3 +93,73 @@ def duplicate(root: Path, template: str, target: str, *, allow_replace: bool = F
     )
     write_draft_meta_info(destination, root=root)
     return destination
+
+
+def _seconds(value: Any) -> float | None:
+    """微秒 → 秒，保留 6 位小数；缺值原样返回 None。"""
+    return None if value is None else round(int(value) / SEC, 6)
+
+
+def _replaceable(track_type: str | None) -> bool:
+    """该轨道类型能否在模板模式下改（沿用 pyJianYingDraft 的 allow_modify）。"""
+    from pyJianYingDraft.track import TrackType
+
+    member = next((item for item in TrackType if item.name == track_type), None)
+    return bool(member and member.value.allow_modify)
+
+
+def _slot(track_type: str | None, segment: dict[str, Any]) -> dict[str, Any]:
+    """把 inspect_draft 的一段换算成槽位描述。"""
+    target = segment.get("target_timerange") or {}
+    slot: dict[str, Any] = {
+        "index": segment.get("index"),
+        "kind": "text" if track_type == "text" else "material",
+        "target_start": _seconds(target.get("start")),
+        "duration": _seconds(target.get("duration")),
+    }
+    if track_type == "text":
+        slot["text"] = segment.get("text")
+        return slot
+    source = segment.get("source_timerange") or {}
+    slot.update(
+        {
+            "material_name": segment.get("material_name"),
+            "material_path": segment.get("material_path"),
+            "source_start": _seconds(source.get("start")),
+            "source_duration": _seconds(source.get("duration")),
+            "speed": segment.get("speed", 1.0),
+        }
+    )
+    return slot
+
+
+def list_slots(root: Path, draft: str) -> dict[str, Any]:
+    """列出草稿里可替换的槽位：素材槽（视频/音频轨）与文本槽（文本轨）。
+
+    槽位只是"给人和 AI 看的清单"；真正替换时按轨道名 + 片段下标定位。
+    """
+    project = _project(resolve_root(root), draft)
+    info = inspect_draft(project)
+    tracks = info.get("tracks") or []
+    name_counts: dict[tuple[str, str], int] = {}
+    for track in tracks:
+        key = (str(track.get("type")), str(track.get("name")))
+        name_counts[key] = name_counts.get(key, 0) + 1
+    return {
+        "draft": draft,
+        "tracks": [
+            {
+                "name": track.get("name"),
+                "type": track.get("type"),
+                "replaceable": _replaceable(track.get("type")),
+                "ambiguous_name": name_counts[
+                    (str(track.get("type")), str(track.get("name")))
+                ] > 1,
+                "segments": [
+                    _slot(track.get("type"), segment)
+                    for segment in track.get("segments") or []
+                ],
+            }
+            for track in tracks
+        ],
+    }

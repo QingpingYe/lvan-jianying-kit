@@ -141,5 +141,61 @@ class DuplicateTests(unittest.TestCase):
                 jy_template.write_draft(root, "模板", {"id": "root"})
 
 
+class SlotTests(unittest.TestCase):
+    def test_lists_media_and_text_slots_in_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            slots = jy_template.list_slots(root, "模板")
+            self.assertEqual(slots["draft"], "模板")
+            tracks = {track["name"]: track for track in slots["tracks"]}
+            video = tracks["main_video"]["segments"][0]
+            self.assertEqual(tracks["main_video"]["type"], "video")
+            self.assertEqual(video["kind"], "material")
+            self.assertEqual(video["material_name"], "占位.mp4")
+            self.assertEqual(video["duration"], 2.0)
+            self.assertEqual(video["source_duration"], 2.0)
+            self.assertEqual(video["index"], 0)
+            text = tracks["title"]["segments"][0]
+            self.assertEqual(text["kind"], "text")
+            self.assertEqual(text["text"], "第1集")
+            self.assertEqual(text["duration"], 2.0)
+
+    def test_marks_unmodifiable_tracks_and_ambiguous_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = draft.DraftFolder(str(root)).create_draft("模板", 1080, 1920, fps=30)
+            script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
+            script.add_segment(
+                draft.VideoSegment(fake_video_material(), draft.trange("0s", "2s")), "main_video"
+            )
+            refs = script.append_tracks([
+                draft.TrackSpec(draft.TrackType.text, "text"),
+                draft.TrackSpec(draft.TrackType.text, "subtitle"),
+                draft.TrackSpec(draft.TrackType.effect, "fx"),
+            ])
+            script.add_segment(draft.TextSegment("甲", draft.trange("0s", "2s")), refs[0])
+            script.add_segment(draft.TextSegment("乙", draft.trange("0s", "2s")), refs[1])
+            script.save()
+            # 库不允许建同名轨道，但剪映里允许存在；直接改盘上的轨道名来构造这个场景
+            content_path = root / "模板" / "draft_content.json"
+            content = json.loads(content_path.read_text(encoding="utf-8"))
+            for track in content["tracks"]:
+                if track.get("name") == "subtitle":
+                    track["name"] = "text"
+            content_path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+            write_draft_meta_info(root / "模板", root=root)
+
+            tracks = jy_template.list_slots(root, "模板")["tracks"]
+            text_tracks = [track for track in tracks if track["type"] == "text"]
+            self.assertEqual(len(text_tracks), 2)
+            for track in text_tracks:
+                self.assertTrue(track["replaceable"])
+                self.assertTrue(track["ambiguous_name"])
+            effects = [track for track in tracks if track["type"] == "effect"]
+            self.assertEqual(len(effects), 1)
+            self.assertFalse(effects[0]["replaceable"])
+
+
 if __name__ == "__main__":
     unittest.main()
