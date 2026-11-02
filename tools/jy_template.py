@@ -102,6 +102,38 @@ def _project(root: Path, name: str) -> Path:
     return project
 
 
+def _safe_name(name: Any) -> str:
+    """草稿名必须是单层目录名：挡住分隔符、``..`` 与盘符，避免写到草稿根目录之外。
+
+    这个名字会被 ``root / name`` 直接拼成路径，MCP 工具又是给 AI 调的，
+    所以必须在写盘之前挡住 `..\\..\\x` 这类输入。
+    """
+    text = str(name or "").strip()
+    if not text:
+        raise TemplateError("草稿名不能为空")
+    if text in {".", ".."} or any(token in text for token in ("/", "\\", ":", "\0")):
+        raise TemplateError(f"草稿名必须是单层目录名，不能带路径分隔符：{name}")
+    return text
+
+
+def _assert_template_writable(root: Path, name: str) -> None:
+    """确认模板的根文件与活动时间线一致。
+
+    写回时 ``update_project_json`` 也会做同样的比较；提前比一次，可以让整批在
+    复制出任何草稿之前就失败，而不是每行复制完再各自报错。
+    """
+    from jianying_tool.native_codec import _project_documents, decode_bytes
+
+    documents = _project_documents(root / name)
+    decoded = [decode_bytes(path.read_bytes())[0] for path in documents]
+    primary = decoded[0]
+    for other in decoded[1:]:
+        if other.get("id") != primary.get("id") or other != primary:
+            raise TemplateError(
+                f"模板草稿的根文件与活动时间线内容不一致，先在剪映里打开并保存一次：{name}"
+            )
+
+
 def read_draft(root: Path, name: str) -> tuple[dict[str, Any], str]:
     """读草稿内容，返回 ``(明文内容, 格式名)``；密文由本机编解码层解开。"""
     project = _project(resolve_root(root), name)
@@ -120,6 +152,7 @@ def duplicate(root: Path, template: str, target: str, *, allow_replace: bool = F
     排除 ``.jianying-tool-backups``；草稿目录之外的素材路径原样保留。
     """
     root = resolve_root(root)
+    target = _safe_name(target)
     source = _project(root, template)
     destination = root / target
     if destination.exists() and not allow_replace:
@@ -318,8 +351,12 @@ def _find_text_track(content: dict[str, Any], track_name: str) -> dict[str, Any]
     return matches[0]
 
 
-def _shortest_span(content: dict[str, Any], material_name: str) -> int | None:
-    """引用该素材名的片段里最短的片段时长（微秒）；没有片段引用则 None。"""
+def _required_material_length(content: dict[str, Any], material_name: str) -> int | None:
+    """按名字替换时，新素材至少要多长才够用（微秒）；没有片段引用则 None。
+
+    按"取用范围终点"算而不是片段时长：``replace_material_by_name`` 保留原来的
+    ``source_timerange``，如果片段从素材第 6 秒开始取 2 秒，新素材就必须 ≥ 8 秒。
+    """
     ids = {
         item.get("id")
         for item in (content.get("materials") or {}).get("videos") or []
@@ -327,13 +364,59 @@ def _shortest_span(content: dict[str, Any], material_name: str) -> int | None:
     }
     if not ids:
         return None
-    spans = [
-        int((segment.get("target_timerange") or {}).get("duration") or 0)
-        for track in content.get("tracks") or []
-        for segment in track.get("segments") or []
-        if segment.get("material_id") in ids
-    ]
-    return min(spans) if spans else None
+    needed: list[int] = []
+    for track in content.get("tracks") or []:
+        for segment in track.get("segments") or []:
+            if segment.get("material_id") not in ids:
+                continue
+            source = segment.get("source_timerange") or {}
+            if source:
+                needed.append(int(source.get("start") or 0) + int(source.get("duration") or 0))
+            else:
+                needed.append(int((segment.get("target_timerange") or {}).get("duration") or 0))
+    return max(needed) if needed else None
+
+
+def _track_segments(content: dict[str, Any], track_name: str) -> list[dict[str, Any]]:
+    """取某条轨道的片段列表；同名轨道不唯一时报错（与底层 get_imported_track 一致）。"""
+    matches = [track for track in content.get("tracks") or [] if track.get("name") == track_name]
+    if not matches:
+        raise TemplateError(f"轨道不存在：{track_name}")
+    if len(matches) > 1:
+        raise TemplateError(f"轨道名不唯一（{len(matches)} 条）：{track_name}")
+    return list(matches[0].get("segments") or [])
+
+
+def _text_template_requirement(content: dict[str, Any], material_id: Any) -> int | None:
+    """该片段是文字模板（花字）时要几段文本；普通文本返回 None。
+
+    底层对文字模板是"给了几段就换几段"，给少了会把模板原文悄悄留在草稿里，
+    所以必须在预检阶段就看出来。
+    """
+    for template in (content.get("materials") or {}).get("text_templates") or []:
+        if isinstance(template, dict) and template.get("id") == material_id:
+            return len(template.get("text_info_resources") or [])
+    return None
+
+
+def _unreferenced_materials(content: dict[str, Any]) -> list[str]:
+    """列出没有被任何片段引用的视频/音频/文本素材（替换后留下的旧素材就在这）。"""
+    referenced: set[str] = set()
+    for track in content.get("tracks") or []:
+        referenced |= _segment_reference_ids(track.get("segments"))
+    labels: list[str] = []
+    for pool_name in ("videos", "audios", "texts"):
+        for item in (content.get("materials") or {}).get(pool_name) or []:
+            if not isinstance(item, dict) or item.get("id") in referenced:
+                continue
+            label = (
+                item.get("material_name")
+                or item.get("name")
+                or item.get("path")
+                or item.get("id")
+            )
+            labels.append(f"{label}（{pool_name}）")
+    return sorted(set(str(label) for label in labels))
 
 
 def _source_timerange(source_start: Any, duration: Any):
@@ -431,14 +514,17 @@ def _prepare_row(
                 raise TemplateError(f"素材不存在：{path}")
             material = _load_video_material(path)
             if getattr(material, "material_type", "video") != "photo":
-                span = _shortest_span(content, str(material_name))
-                if span is None:
-                    raise TemplateError(f"没有片段引用名为 {material_name} 的视频素材")
-                if int(material.duration) < span:
+                needed = _required_material_length(content, str(material_name))
+                if needed is None:
+                    raise TemplateError(
+                        f"没有片段引用名为 {material_name} 的视频素材"
+                        f"（按名字替换只支持视频/图片，音频请用 by_slot）"
+                    )
+                if int(material.duration) < needed:
                     raise TemplateError(
                         f"新素材 {material.material_name} 时长 {material.duration / SEC:.3f}s"
-                        f" 短于引用它的片段 {span / SEC:.3f}s；按名字替换不改片段时长，"
-                        f"请改用 by_slot 指定取用范围"
+                        f" 短于引用它的片段所需的取用范围 {needed / SEC:.3f}s；"
+                        f"按名字替换不改片段的时长与取用范围，请改用 by_slot 指定取用范围"
                     )
             loaded_by_name.append((str(material_name), material))
 
@@ -449,8 +535,18 @@ def _prepare_row(
                     raise TemplateError(f"by_slot 缺少字段 {field}：{item}")
             track_name = str(item["track"])
             track_type = _track_type_of(content, track_name)
-            if not _replaceable(track_type):
-                raise TemplateError(f"轨道 {track_name}（{track_type}）不支持替换素材")
+            if track_type not in {"video", "audio"}:
+                raise TemplateError(
+                    f"轨道 {track_name}（{track_type}）不能换素材："
+                    f"by_slot 只支持视频/音频轨，文本请用 texts"
+                )
+            segments = _track_segments(content, track_name)
+            index = int(item["segment"])
+            if not 0 <= index < len(segments):
+                raise TemplateError(
+                    f"轨道 {track_name} 只有 {len(segments)} 个片段，"
+                    f"清单里写的是片段 {index}"
+                )
             path = _media_path(base_dir, str(item["file"]))
             if not path.is_file():
                 raise TemplateError(f"素材不存在：{path}")
@@ -458,7 +554,7 @@ def _prepare_row(
                 {
                     "track": track_name,
                     "track_type": track_type,
-                    "segment": int(item["segment"]),
+                    "segment": index,
                     "material": _load_video_material(path),
                     "timerange": _source_timerange(item.get("source_start"), item.get("duration")),
                 }
@@ -469,11 +565,24 @@ def _prepare_row(
             if not isinstance(values, list):
                 raise TemplateError(f"texts.{track_name} 必须是数组")
             track = _find_text_track(content, str(track_name))
-            count = len(track.get("segments") or [])
+            segments = track.get("segments") or []
+            count = len(segments)
             if len(values) != count:
                 raise TemplateError(
                     f"文本轨 {track_name} 有 {count} 个片段，但给了 {len(values)} 条文案"
                 )
+            for index, (value, segment) in enumerate(zip(values, segments)):
+                required = _text_template_requirement(content, segment.get("material_id"))
+                if required is None:
+                    if not isinstance(value, str):
+                        raise TemplateError(
+                            f"文本轨 {track_name} 片段 {index} 是普通文本，文案必须是字符串"
+                        )
+                elif required > 1:
+                    raise TemplateError(
+                        f"轨道 {track_name} 片段 {index} 是文字模板（需要 {required} 段文本）："
+                        f"清单每个片段只支持 1 段文案，先在剪映里把它改成普通文本再套模板"
+                    )
             resolved_texts.append((str(track_name), list(values)))
     except TemplateError:
         raise
@@ -559,12 +668,14 @@ def apply_row(
     except Exception as exc:  # 库抛的轨道/素材歧义、越界等，一律收敛成"该行失败"
         raise RowFailed(name, f"{type(exc).__name__}: {exc}") from exc
 
+    updated, _ = read_draft(root, name)
     return {
         "row": name,
         "draft": str(project),
         "replaced": replaced,
         "warnings": warnings,
-        "unfilled_slots": _unfilled_slots(content, prepared["covered"]),
+        "unfilled_slots": _unfilled_slots(updated, prepared["covered"]),
+        "unreferenced_materials": _unreferenced_materials(updated),
     }
 
 
@@ -648,6 +759,9 @@ def load_plan(path: Path) -> dict[str, Any]:
     rows = data.get("rows")
     if not isinstance(rows, list) or not rows:
         raise TemplateError("清单缺少非空的 rows")
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise TemplateError(f"清单第 {index} 行必须是对象，不是 {type(row).__name__}")
     return data
 
 
@@ -675,7 +789,23 @@ def fill(
     if not (root / template).is_dir():
         raise TemplateError(f"模板草稿不存在：{root / template}")
 
-    template_content, _ = read_draft(root, template)
+    if rows is not None:
+        unknown = sorted(index for index in rows if not 1 <= index <= len(raw_rows))
+        if unknown:
+            raise TemplateError(
+                f"--rows 里的行号超出范围：{unknown}（清单共 {len(raw_rows)} 行）"
+            )
+
+    try:
+        _assert_template_writable(root, template)
+        template_content, _ = read_draft(root, template)
+    except TemplateError:
+        raise
+    except Exception as exc:  # 编解码层读不出来（缺 DLL、路径不对）也算整批级别的错误
+        raise TemplateError(
+            f"模板草稿读不出来：{template}（{type(exc).__name__}: {exc}）"
+        ) from exc
+
     defaults = plan.get("defaults") or {}
     require_all = bool(plan.get("require_all_slots"))
     selected = [
@@ -688,18 +818,26 @@ def fill(
     seen: dict[str, int] = {}
     ok_count = 0
     for index, row in selected:
-        name = str(row.get("name") or f"{template}-{index}")
         entry: dict[str, Any] = {
-            "row": name,
+            "row": (
+                str(row.get("name")) if isinstance(row, dict) and row.get("name")
+                else f"第 {index} 行"
+            ),
             "index": index,
-            "draft": str(root / name),
+            "draft": None,
             "draft_ok": False,
             "error": None,
             "replaced": {"by_name": 0, "by_slot": 0, "texts": 0},
             "warnings": [],
             "unfilled_slots": [],
+            "unreferenced_materials": [],
         }
         try:
+            if not isinstance(row, dict):
+                raise TemplateError(f"清单第 {index} 行必须是对象")
+            name = _safe_name(row.get("name") or f"{template}-{index}")
+            entry["row"] = name
+            entry["draft"] = str(root / name)
             if name in seen:
                 raise TemplateError(f"与第 {seen[name]} 行重名：{name}")
             seen[name] = index

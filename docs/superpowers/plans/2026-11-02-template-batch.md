@@ -432,17 +432,17 @@ git commit -m "feat: 模板能力接入 MCP 工具层"
 - Consumes: 前六个任务的全部产出
 - Produces: 0.7.0 的插件包与三份用户文档
 
-- [ ] **Step 1: 版本与能力描述**
+- [x] **Step 1: 版本与能力描述**
 
 `.codex-plugin/plugin.json`：`version` 改 `0.7.0`；`longDescription` 里"71 MCP tools"改成 `74 MCP tools`（原 71 + 3），并把 skills 列表补上模板批量出片。
 
-- [ ] **Step 2: 三份文档**
+- [x] **Step 2: 三份文档**
 
 - `工具清单.md`：新增一节"十五、模板批量出片（新增 3 个工具）"，列出三个工具与 `template_fill.py` 脚本；"覆盖情况小结"的工具总数从 71 改成 74。
 - `使用说明.md`：日常使用一节加"5.7 用模板批量出片"，给出完整的清单 JSON 示例、`--dry-run` 先看报告的建议、"剪映开着目标草稿不要跑"的提醒；"目录结构"补 `tools/jy_template.py`、`tools/template_fill.py`、`mcp_ext/`、`skills/template-batch/`。
 - `README.md`：把新能力加进"装完之后能说什么"，例如「用《模板》按这份清单套 10 条」。
 
-- [ ] **Step 3: 端到端验收（需要用户本机剪映环境）**
+- [x] **Step 3: 端到端验收（需要用户本机剪映环境）**（真跑已做，剩用户在剪映首页核对）
 
 1. `& $py -m unittest discover -s tests -t .`，Expected: 全绿
 2. `powershell -ExecutionPolicy Bypass -File scripts\validate_plugin.ps1`，Expected: `自检通过。`
@@ -450,7 +450,7 @@ git commit -m "feat: 模板能力接入 MCP 工具层"
 4. 真跑一次 3 行清单 → 在剪映首页确认 3 个草稿可打开、时长正确、样式与模板一致、素材已换
 5. 把结果写回本任务说明，并把 spec/plan 拷进仓库 `docs/superpowers/`
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add .codex-plugin/plugin.json README.md 使用说明.md 工具清单.md docs

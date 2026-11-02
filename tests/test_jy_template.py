@@ -171,6 +171,16 @@ class DuplicateTests(unittest.TestCase):
             with self.assertRaises(DraftDecodeError):
                 jy_template.write_draft(root, "模板", {"id": "root"})
 
+    def test_duplicate_rejects_a_name_that_escapes_the_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # 草稿根目录放在临时目录里层：万一守卫失效，逃逸目标也落在临时目录内被清掉
+            root = Path(tmp) / "草稿"
+            root.mkdir()
+            make_template_draft(root, "模板")
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.duplicate(root, "模板", r"..\逃逸")
+            self.assertFalse((root.parent / "逃逸").exists())
+
 
 class SlotTests(unittest.TestCase):
     def test_lists_media_and_text_slots_in_seconds(self) -> None:
@@ -452,6 +462,109 @@ class ApplyRowTests(TempDraftCase):
                 jy_template.import_track(root, "模板", "目标", "title")
 
 
+class ApplyRowGuardTests(TempDraftCase):
+    """复核发现的预检缺口：按名字替换的取用范围、文字模板、未被引用的素材。"""
+
+    def test_by_name_guard_uses_the_source_range_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = draft.DraftFolder(str(root)).create_draft("模板", 1080, 1920, fps=30)
+            script.append_tracks([draft.TrackSpec(draft.TrackType.video, "main_video")])
+            material = fake_video_material(material_name="占位.mp4", duration=8_000_000)
+            script.add_segment(
+                draft.VideoSegment(
+                    material, draft.trange("0s", "2s"), source_timerange=draft.trange("6s", "2s")
+                ),
+                "main_video",
+            )
+            script.save()
+            write_draft_meta_info(root / "模板", root=root)
+            jy_template.duplicate(root, "模板", "第1集")
+            before = (root / "第1集" / "draft_content.json").read_bytes()
+
+            too_short = self.media(root / "素材", "2.5s.mp4", 2_500_000)
+            with self.assertRaises(jy_template.RowFailed) as caught:
+                jy_template.apply_row(
+                    root,
+                    {"template": "模板"},
+                    {"name": "第1集", "materials": {"by_name": {"占位.mp4": str(too_short)}}},
+                    base_dir=root,
+                )
+            self.assertIn("取用范围", str(caught.exception))
+            self.assertEqual((root / "第1集" / "draft_content.json").read_bytes(), before)
+
+            long_enough = self.media(root / "素材", "8s.mp4", 8_000_000)
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {"name": "第1集", "materials": {"by_name": {"占位.mp4": str(long_enough)}}},
+                base_dir=root,
+            )
+            self.assertEqual(report["replaced"]["by_name"], 1)
+
+    def test_report_lists_materials_left_without_any_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            jy_template.duplicate(root, "模板", "第1集")
+            new_video = self.media(root / "素材", "新.mp4")
+
+            report = jy_template.apply_row(
+                root,
+                {"template": "模板"},
+                {
+                    "name": "第1集",
+                    "materials": {
+                        "by_slot": [{"track": "main_video", "segment": 0, "file": str(new_video)}]
+                    },
+                },
+                base_dir=root,
+            )
+
+            self.assertIn("占位.mp4", " ".join(report["unreferenced_materials"]))
+
+    def test_text_template_segment_needing_more_text_fails_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = make_template_draft(root, "模板")
+            content_path = template / "draft_content.json"
+            content = json.loads(content_path.read_text(encoding="utf-8"))
+            track = next(item for item in content["tracks"] if item["type"] == "text")
+            track["segments"][0]["material_id"] = "text-template-1"
+            for suffix in ("a", "b"):
+                content["materials"]["texts"].append(
+                    {
+                        "id": f"sub-text-{suffix}",
+                        "content": json.dumps({"text": "旧", "styles": []}, ensure_ascii=False),
+                    }
+                )
+            content["materials"]["text_templates"] = [
+                {
+                    "id": "text-template-1",
+                    "name": "花字模板",
+                    "text_info_resources": [
+                        {"text_material_id": "sub-text-a"},
+                        {"text_material_id": "sub-text-b"},
+                    ],
+                }
+            ]
+            content_path.write_text(
+                json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            write_draft_meta_info(template, root=root)
+            jy_template.duplicate(root, "模板", "第1集")
+
+            with self.assertRaises(jy_template.RowFailed) as caught:
+                jy_template.apply_row(
+                    root,
+                    {"template": "模板"},
+                    {"name": "第1集", "texts": {"title": ["一条文案"]}},
+                    base_dir=root,
+                )
+
+            self.assertIn("文字模板", str(caught.exception))
+
+
 class FillTests(TempDraftCase):
     """整批编排：失败不中断、dry-run 不落盘、行过滤、未填槽位与撞名。"""
 
@@ -601,6 +714,122 @@ class FillTests(TempDraftCase):
             self.assertFalse(row["draft_ok"])
             self.assertIn("main_video[0]:material", row["error"])
             self.assertFalse((root / "第1集").exists())
+
+
+class FillGuardTests(TempDraftCase):
+    """复核发现的编排缺口：预检要挡住"复制之后才失败"的情况。"""
+
+    def plan(self, rows: list[dict], **extra: object) -> dict:
+        return {"template": "模板", "rows": rows, **extra}
+
+    def test_by_slot_on_a_text_track_fails_before_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            new_video = self.media(root / "素材", "新.mp4")
+
+            report = jy_template.fill(
+                root,
+                self.plan([
+                    {
+                        "name": "第1集",
+                        "materials": {
+                            "by_slot": [
+                                {"track": "title", "segment": 0, "file": str(new_video)}
+                            ]
+                        },
+                    }
+                ]),
+                base_dir=root,
+            )
+
+            self.assertFalse(report["rows"][0]["draft_ok"])
+            self.assertIn("title", report["rows"][0]["error"])
+            self.assertFalse((root / "第1集").exists())
+
+    def test_segment_index_out_of_range_fails_before_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            new_video = self.media(root / "素材", "新.mp4")
+
+            report = jy_template.fill(
+                root,
+                self.plan([
+                    {
+                        "name": "第1集",
+                        "materials": {
+                            "by_slot": [
+                                {"track": "main_video", "segment": 5, "file": str(new_video)}
+                            ]
+                        },
+                    }
+                ]),
+                base_dir=root,
+            )
+
+            self.assertFalse(report["rows"][0]["draft_ok"])
+            self.assertIn("片段", report["rows"][0]["error"])
+            self.assertFalse((root / "第1集").exists())
+
+    def test_divergent_template_timeline_fails_the_whole_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = make_template_draft(root, "模板")
+            timeline = template / "Timelines" / "timeline-1"
+            timeline.mkdir(parents=True)
+            (timeline / "draft_content.json").write_text('{"id": "other"}', encoding="utf-8")
+            (template / "timeline_layout.json").write_text(
+                json.dumps({"activeTimeline": "timeline-1"}), encoding="utf-8"
+            )
+
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.fill(
+                    root, self.plan([{"name": "第1集", "texts": {"title": ["甲"]}}]), base_dir=root
+                )
+            self.assertFalse((root / "第1集").exists())
+
+    def test_row_name_with_path_separator_fails_the_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "草稿"
+            root.mkdir()
+            make_template_draft(root, "模板")
+
+            report = jy_template.fill(
+                root,
+                self.plan([{"name": r"..\逃逸", "texts": {"title": ["甲"]}}]),
+                base_dir=root,
+            )
+
+            self.assertFalse(report["rows"][0]["draft_ok"])
+            self.assertFalse((root.parent / "逃逸").exists())
+
+    def test_rows_out_of_range_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.fill(
+                    root,
+                    self.plan([{"name": "第1集", "texts": {"title": ["甲"]}}]),
+                    base_dir=root,
+                    rows={4},
+                )
+
+
+class PlanTests(unittest.TestCase):
+    """清单解析：行必须是对象，否则早失败而不是抛属性错误。"""
+
+    def test_load_plan_rejects_a_row_that_is_not_an_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            path.write_text(
+                json.dumps({"template": "模板", "rows": ["第1集"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with self.assertRaises(jy_template.TemplateError):
+                jy_template.load_plan(path)
 
 
 class CliTests(TempDraftCase):
