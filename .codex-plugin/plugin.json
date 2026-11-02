@@ -1,6 +1,6 @@
 {
   "name": "jianying-kit",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Let Codex drive JianyingPro (CapCut CN desktop) drafts through a local MCP server: build drafts from scripts and clips, edit segments, add subtitles, BGM, voiceover, and export. Windows only.",
   "author": {
     "name": "YeQingping"
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Jianying Drafts",
     "shortDescription": "Drive JianyingPro drafts with natural language",
-    "longDescription": "Assemble scripts, clips, subtitles, BGM, and voiceover into JianyingPro drafts you can keep refining in the app. Reads and writes draft files through the local videoeditor.dll without simulating mouse input or uploading media; ships 74 MCP tools for drafts, segments, subtitles, transitions, keyframes, voiceover, transcription, export, and template batch production (duplicate a draft as a template, swap clips and captions across many drafts, move a whole track between drafts), plus asset tagging and editing-pipeline skills.",
+    "longDescription": "Assemble scripts, clips, subtitles, BGM, and voiceover into JianyingPro drafts you can keep refining in the app. Reads and writes draft files through the local videoeditor.dll without simulating mouse input or uploading media; ships 77 MCP tools for drafts, segments, subtitles, transitions, keyframes, voiceover, transcription, export, template batch production (duplicate a draft as a template, swap clips and captions across many drafts, move a whole track between drafts), and AI short-drama rough cut (scan a clip folder, validate a cut plan, and build the draft), plus asset tagging and editing-pipeline skills.",
     "developerName": "YeQingping",
     "category": "Productivity",
     "capabilities": [
@@ -36,7 +36,8 @@
       "List my JianyingPro drafts",
       "Turn this clip folder into a JianyingPro draft in script order",
       "Shorten shot 2 by half a second and add a 0.5s dissolve",
-      "Use my template draft to produce 10 episodes from this clip list"
+      "Use my template draft to produce 10 episodes from this clip list",
+      "Turn this episode's AI-drama clips into a rough-cut draft"
     ],
     "brandColor": "#1F6FEB"
   }
