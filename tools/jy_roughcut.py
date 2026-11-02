@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -102,3 +103,57 @@ def scan(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return data
+
+
+def _take_files(grouping: dict[str, Any]) -> list[str]:
+    files: list[str] = []
+    for shot in grouping.get("shots", []):
+        for take in shot.get("takes", []):
+            files.extend(take.get("files") or [])
+    return files
+
+
+def validate_grouping(grouping: dict[str, Any], scan: dict[str, Any]) -> dict[str, Any]:
+    """校验命名推断产物的分组表：覆盖率、结构、segmented 顺序。"""
+    errors: list[str] = []
+    warnings: list[str] = []
+    known = {c["file"] for c in scan.get("clips", [])}
+    skipped = {s["file"] for s in scan.get("skipped", [])}
+    shot_files = _take_files(grouping)
+    unresolved = [item.get("file") for item in grouping.get("unresolved", [])]
+    excluded = [item.get("file") for item in grouping.get("excluded", [])]
+    counts = Counter(shot_files + unresolved + excluded)
+
+    for name, times in sorted(counts.items()):
+        if times > 1:
+            errors.append(f"文件被覆盖 {times} 次（应为 1 次）：{name}")
+        if name not in known and name not in skipped:
+            errors.append(f"引用了 scan 里不存在的文件：{name}")
+    for name in shot_files + unresolved:
+        if name in skipped:
+            errors.append(f"非视频文件不能作为素材：{name}")
+    for name in sorted(known):
+        if counts.get(name, 0) == 0:
+            errors.append(f"素材未被覆盖：{name}")
+
+    for shot in grouping.get("shots", []):
+        sid = shot.get("shot")
+        if not sid:
+            errors.append("shots 里存在空 shot 标识")
+        takes = shot.get("takes") or []
+        if not takes:
+            errors.append(f"shot {sid}: 没有任何 take")
+        for take in takes:
+            tid = take.get("take")
+            if not tid:
+                errors.append(f"shot {sid}: take 标识为空")
+            files = take.get("files") or []
+            if not files:
+                errors.append(f"shot {sid} take {tid}: files 为空")
+            kind = take.get("kind")
+            if kind not in {"single", "segmented"}:
+                errors.append(f"shot {sid} take {tid}: kind 非法：{kind}")
+            elif kind == "segmented" and len(files) < 2:
+                warnings.append(f"shot {sid} take {tid}: segmented 但只有一个文件")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
