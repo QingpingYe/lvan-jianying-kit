@@ -79,7 +79,7 @@ RoughCut 的「编辑即数据、可撤销」思路。同类思路的完整清�
 jianying-kit/
 ├─ tools/
 │   ├─ jy_roughcut.py        ← 新增：共享核心
-│   ├─ roughcut.py           ← 新增：CLI 薄包装（scan / validate / build / report）
+│   ├─ roughcut.py           ← 新增：CLI 薄包装（scan / frames / validate / build / report）
 │   ├─ build_draft.py        （不动，被复用）
 │   └─ ...
 ├─ mcp_ext/
@@ -152,8 +152,19 @@ jianying-kit/
 }
 ```
 
-同镜的 `segments` 按顺序接续（同一 take 的分段或混段拼接）。`transition_out.type` v1 支持
-`hard_cut` 与 `dissolve`（带 `duration`）；其他类型只写建议，不执行。`effects` 同理只标注。
+字段约束：
+
+- 同镜的 `segments` 按顺序接续（同一 take 的分段或混段拼接）；字段语义与 shotlist 对齐，
+  v1 不带 `speed`（恒 1）。
+- `canvas` 必填：由 scan 结果推断后写入（建议众数分辨率/帧率），缺失是校验错误。
+- `transition_out.type` v1 支持 `hard_cut` 与 `dissolve`（带 `duration`）；其他类型只写建议，不执行。
+  `effects` 同理只标注。
+- `reason` 必填（每个入选镜头都要有理由）；`confidence` ∈ [0,1]；低于 0.6 的镜头必须把问题写进
+  `review`（字符串数组），校验器强制且不阻断 build，但报告置顶。
+- 可选透传块 `subtitles` / `bgm` / `voiceover`：原样并入 shotlist，复用 `build_draft.py` 已有能力。
+- 顶层可选 `source_audio: keep | mute`：默认 `keep`；要静音原素材声音时声明 `mute`，
+  执行层用现有音量命令处理（具体字段名留待实现）。
+
 人读版 `roughcut.md` 与 JSON 同时产出：逐镜表（首选/备选/取用区间/理由）+ 待确认清单 + 时间线摘要。
 
 ## 9. 共享核心 `tools/jy_roughcut.py`
@@ -161,10 +172,11 @@ jianying-kit/
 | 函数 | 作用 |
 | --- | --- |
 | `scan(root)` | 清点视频文件 + 探测元数据（视频流时长/分辨率/帧率/音轨），写 `scan.json` |
+| `frames(grouping, out)` | 按镜头生成抽帧与联系表（同镜 take 并排），供会话内看片 |
 | `validate_grouping(grouping, scan)` | 覆盖率强制、镜号/take 冲突、segmented 顺序 |
-| `validate_plan(plan, scan)` | 区间越界、时间线重叠、缺镜、文件不存在、缺理由/置信度 |
+| `validate_plan(plan, scan)` | 区间越界、时间线重叠、缺镜、文件不存在、缺理由/置信度、低置信未进 `review` |
 | `plan_to_shotlist(plan)` | 生成 shotlist.json（`target_start` 自动累加） |
-| `apply_transitions(draft, plan)` | 叠化经 `jianying_tool.cli transition` 应用；其余类型只报告 |
+| `apply_transitions(draft, plan)` | 叠化经现有转场能力应用（`jianying_tool.cli transition` 或 MCP `add_video_transition`，实现阶段定）；其余类型只报告 |
 | `report(plan)` | 写 `roughcut.md` |
 
 约定与 `build_draft.py` / `jy_template.py` 一致：自动读 `jianying-paths.json` 注入环境变量、
@@ -173,6 +185,7 @@ jianying-kit/
 ## 10. CLI `tools/roughcut.py`
 
 - `scan --source <目录> [--out <目录>]`
+- `frames --grouping <json> [--out <目录>]`（抽帧 + 联系表）
 - `validate --grouping <json> --plan <json>`（必须 0 error）
 - `build --plan <json> [--name <草稿名>] [--existing] [--dry-run]`（内部调 `build_draft.py`，再挂叠化）
 - `report --plan <json>`
@@ -193,7 +206,7 @@ jianying-kit/
 
 1. **清点**：`roughcut.py scan` 列出全部素材与元数据。
 2. **命名推断**：读文件名与目录结构，产出 `grouping.json`；每个推断写 evidence。
-3. **看片建卡**：按镜头组联系表（同镜 take 并排），`view_image` 逐张看；
+3. **看片建卡**：`roughcut.py frames` 生成按镜头组的联系表（同镜 take 并排），`view_image` 逐张看；
    对照剧本/分镜记录：头尾稳定性、中段崩坏、人物/服装一致性、动作完成度、情绪匹配。
 4. **逐镜决策**：定首选/备选/取用区间/理由/置信度，写 `roughcut.json` 与 `roughcut.md`。
 5. **校验**：`roughcut.py validate`，必须 0 error。
@@ -212,6 +225,9 @@ jianying-kit/
 6. 兜底：文件修改时间 + 画面内容对剧本逐条匹配；无剧本时按文件名序 + 画面连续性，
    报告明确声明「未对剧本验证」。
 7. 复用：`grouping.json` 经用户确认后视为事实源，后续步骤与重跑一律引用，不重新推断。
+8. unresolved 去向：不进入 plan 与草稿时间线，只在报告中列出路径与原因
+   （不可识别素材混入成片的风险大于它的价值）。
+9. 一集 = 一个素材文件夹；`episode` 默认取文件夹名，可覆盖。
 
 ## 14. 测试
 
@@ -225,6 +241,8 @@ jianying-kit/
 6. `plan_to_shotlist` 的 `target_start` 累加正确。
 7. `report.md` 生成：待确认清单必含 unresolved 与低置信项。
 8. `--dry-run` 走全量校验但不写任何文件（对齐 template-batch 的验收标准）。
+9. 低置信（<0.6）镜头未写进 `review` 时校验失败；写了则 build 放行。
+10. `unresolved` 的素材不出现在 plan→shotlist 的结果里。
 
 ## 15. 交付后如何验收
 
@@ -235,10 +253,11 @@ jianying-kit/
 ## 16. 留待实现阶段的决定
 
 - `grouping.json` / `roughcut.json` 字段的最终命名与报错文案。
-- 联系表格数与布局；同镜 take 对比图的呈现方式。
+- 同镜 take 对比图的呈现方式。
 - 叠化应用走 CLI 还是 MCP 的具体调用方式。
 - `scan` 的并行度与探测失败降级策略。
-- canvas 默认取哪个素材：建议众数分辨率/帧率，冲突时取第一条并告警。
+- `canvas` 推断冲突时的具体告警文案（取值策略见 §8.2）。
+- 联系表默认帧数与格数（每素材抽几帧、每张几格）。
 
 ## 17. 已知限制（要写进用户文档）
 
@@ -248,6 +267,22 @@ jianying-kit/
 - 素材规模大时看片与决策的耗时/token 成本随镜头数线性增长。
 - 无剧本模式下镜序只能按文件名与画面自洽排序，戏剧顺序的正确性由用户负责。
 
-## 18. 构建者复核记录
+## 18. 构建者复核记录（2026-11-02）
 
-（写完设计后由独立复核者复核，问题与归类记于此处。）
+本机子代理工具不可用，按 brainstorming 技能约定由主代理以「独立构建者」视角复核文档
+（只读文档、不看对话）。提出的问题与归类：
+
+| 复核问题 | 归属 | 结论位置 |
+| --- | --- | --- |
+| 联系表由谁生成：核心脚本还是会话里临时写代码 | 我定 | §9 / §10 增加 `frames`：抽帧与联系表是确定性事务，进核心与 CLI |
+| `review` 字段的结构没定义 | 我定 | §8.2：字符串数组；低置信（<0.6）镜头必须出现在其中 |
+| 低置信镜头是否阻断建草稿 | 我定 | §9：不阻断，但校验器强制其进 `review`，报告置顶 |
+| unresolved 素材是否放进草稿时间线 | 我定 | §13：不进草稿，仅报告列出（混入成片的风险更大） |
+| plan 是否透传字幕/BGM/配音 | 我定 | §8.2：可选透传块，原样并入 shotlist |
+| 原素材声音保留还是静音 | 我定 | §8.2：默认 keep，可在 plan 声明 mute |
+| canvas 缺省怎么办 | 我定 | §8.2：canvas 必填，由 scan 结果推断填入 |
+| 转场应用机制（CLI 还是 MCP） | 实现阶段 | §9 措辞放宽，§16 保留 |
+| segments 是否带 speed | 我定 | §8.2：v1 恒 1，不写 speed |
+| 一集与文件夹的关系 | 既有上下文 | §13：一个文件夹 = 一集 |
+
+无「只有用户能答」的问题。
