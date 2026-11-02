@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -682,6 +683,30 @@ class McpExtTests(TempDraftCase):
             # 核心对"源草稿不存在"的契约就是 FileNotFoundError（见 duplicate 的约定）
             with self.assertRaises(FileNotFoundError):
                 duplicate_local_draft("不存在", "第1集", root=tmp)
+
+
+class EnvTests(unittest.TestCase):
+    """剪映路径注入：插件模式下 paths 文件在用户级运行时目录里。"""
+
+    def test_apply_jianying_env_falls_back_to_the_user_runtime_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            runtime = home / ".jianying-kit"
+            runtime.mkdir()
+            (runtime / "jianying-paths.json").write_text(
+                json.dumps({"JIANYING_INSTALL_ROOT": r"D:\JianyingPro"}),
+                encoding="utf-8",
+            )
+            clean = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"JIANYING_INSTALL_ROOT", "JIANYING_KIT_HOME", "USERPROFILE", "HOME"}
+            }
+            clean.update({"USERPROFILE": str(home), "HOME": str(home)})
+            with mock.patch.dict(os.environ, clean, clear=True):
+                applied = jy_template.apply_jianying_env(start=home / "空的")
+                self.assertEqual(applied.get("JIANYING_INSTALL_ROOT"), r"D:\JianyingPro")
+                self.assertEqual(os.environ["JIANYING_INSTALL_ROOT"], r"D:\JianyingPro")
 
 
 if __name__ == "__main__":

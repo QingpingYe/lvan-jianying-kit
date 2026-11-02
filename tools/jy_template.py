@@ -68,6 +68,11 @@ def apply_jianying_env(start: Path | None = None) -> dict[str, str]:
     candidates: list[Path] = []
     if os.environ.get("JIANYING_KIT_HOME"):
         candidates.append(Path(os.environ["JIANYING_KIT_HOME"]) / "jianying-paths.json")
+    try:
+        # 插件模式的运行时目录（安装器默认写在这里），脚本不一定挨着它
+        candidates.append(Path.home() / ".jianying-kit" / "jianying-paths.json")
+    except RuntimeError:
+        pass
     candidates += [here / "jianying-paths.json", here.parent / "jianying-paths.json"]
     for path in candidates:
         if not path.is_file():

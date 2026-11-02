@@ -30,6 +30,7 @@
 - 「第 2 镜缩短半秒」「给第 4 段加 0.5 秒叠化」
 - 「字幕改成居中、字号加大」
 - 「给这一集配个旁白，用女声」
+- 「用《第1集》当模板，按这份清单套出第 2 到第 5 集」（剪同款批量出片）
 
 ## 手动安装（不依赖 AI）
 
@@ -61,6 +62,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -PluginMode
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\validate_plugin.ps1
 ```
+
+自检会读 `examples/` 下的例子 JSON。Windows PowerShell 5.1 没有 BOM 就会把中文 UTF-8
+当 ANSI 读，含中文的 JSON 会被读成非法 JSON；改过这类文件后跑一次
+`scripts\fix_bom.ps1` 补 BOM 即可。
 
 ## 常见问题
 

@@ -366,7 +366,7 @@ git commit -m "feat: 模板批量出片脚本与技能"
   - `build_server() -> MCPServer`，把上面三个函数注册进去
   - `.mcp.json` 增加第二个 server，键名 `jianying-ext`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 class McpExtTests(unittest.TestCase):
@@ -376,13 +376,13 @@ class McpExtTests(unittest.TestCase):
     def test_tools_reject_a_missing_source_draft(self): ...
 ```
 
-- [ ] **Step 2: 跑测试确认失败并实现服务**
+- [x] **Step 2: 跑测试确认失败并实现服务**
 
 Run: `& $py -m unittest tests.test_jy_template.McpExtTests -v`，Expected: FAIL（`ModuleNotFoundError: mcp_ext`）
 
 `mcp_ext/server.py` 顶部先 `sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))` 再 `import jy_template`；`if __name__ == "__main__": build_server().run()`（与 `jianying_tool.mcp_server` 的启动方式一致）。三个工具都只是 `jy_template` 的转发：`list_template_slots` → `list_slots`，`duplicate_local_draft` → `duplicate`，`import_local_track` → `import_track`；`root` 参数统一走 `resolve_root(root)`，`TemplateError` 直接向上抛（MCP 层会把它变成工具错误）。
 
-- [ ] **Step 3: 接进宿主加载路径**
+- [x] **Step 3: 接进宿主加载路径**
 
 `scripts/launch_mcp.ps1` 增加 `param([string]$Module = "jianying_tool.mcp_server")`，把 `-Module` 值传给 `& $python -m $Module`，并在启动前把插件根写进 `$env:PYTHONPATH`（保留已有行为的默认值，老配置不传参数时完全不变）。
 
@@ -404,12 +404,12 @@ Run: `& $py -m unittest tests.test_jy_template.McpExtTests -v`，Expected: FAIL�
 
 `scripts/validate_plugin.ps1`：技能清单加 `template-batch`；`.mcp.json` 检查里断言 `jianying-ext` 存在且模块名是 `mcp_ext.server`。
 
-- [ ] **Step 4: 跑测试与结构自检**
+- [x] **Step 4: 跑测试与结构自检**
 
 Run: `& $py -m unittest discover -s tests -t . -v`，Expected: PASS
 Run: `powershell -ExecutionPolicy Bypass -File scripts\validate_plugin.ps1`，Expected: `自检通过。`
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add mcp_ext .mcp.json scripts/launch_mcp.ps1 scripts/launch_mcp.cmd scripts/validate_plugin.ps1 tests/test_jy_template.py
