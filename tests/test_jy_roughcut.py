@@ -48,6 +48,47 @@ def make_grouping(shots=None, unresolved=None, excluded=None, root="E:\\素材\\
     }
 
 
+def make_plan(shots, *, canvas=None, episode="第3集", source_root="E:\\素材\\第3集", extra=None):
+    plan = {
+        "version": 1,
+        "episode": episode,
+        "source_root": source_root,
+        "canvas": canvas or {"width": 1080, "height": 1920, "ratio": "9:16", "fps": 30},
+        "shots": shots,
+        "warnings": [],
+    }
+    if extra:
+        plan.update(extra)
+    return plan
+
+
+def make_shot(shot, files, *, durations=None, confidence=0.9, review=None,
+              transition=None, alternates=None, reason="测试理由"):
+    durations = durations or [2.0] * len(files)
+    return {
+        "shot": shot,
+        "script_ref": "",
+        "segments": [
+            {"file": f, "source_start": 0.0, "duration": d}
+            for f, d in zip(files, durations)
+        ],
+        "reason": reason,
+        "confidence": confidence,
+        "alternates": alternates or [],
+        "transition_out": transition or {"type": "hard_cut"},
+        "effects": [],
+        "review": review or [],
+    }
+
+
+def grouping_for(shot_files, unresolved=None):
+    shots = [
+        {"shot": sid, "takes": [{"take": "01", "kind": "single", "files": [f]}]}
+        for sid, f in shot_files.items()
+    ]
+    return make_grouping(shots=shots, unresolved=unresolved)
+
+
 class ScanTests(unittest.TestCase):
     def test_scan_writes_metadata_and_skips_non_video(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,6 +160,64 @@ class GroupingTests(unittest.TestCase):
             unresolved=[{"file": "b.mp4", "reason": "无法判断镜号"}],
         )
         result = jy_roughcut.validate_grouping(grouping, scan)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["errors"], [])
+
+
+class PlanTests(unittest.TestCase):
+    def test_interval_beyond_stream_duration_is_an_error(self):
+        scan = make_scan("a.mp4")  # 视频流 2.0s
+        grouping = grouping_for({"01": "a.mp4"})
+        shot = make_shot("01", ["a.mp4"], durations=[1.0])
+        shot["segments"][0]["source_start"] = 1.5
+        result = jy_roughcut.validate_plan(make_plan([shot]), scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("超出" in e for e in result["errors"]))
+
+    def test_missing_shot_is_an_error(self):
+        scan = make_scan("a.mp4", "b.mp4")
+        grouping = grouping_for({"01": "a.mp4", "02": "b.mp4"})
+        result = jy_roughcut.validate_plan(make_plan([make_shot("01", ["a.mp4"])]), scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("02" in e for e in result["errors"]))
+
+    def test_low_confidence_requires_review_entry(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        shot = make_shot("01", ["a.mp4"], confidence=0.5)
+        result = jy_roughcut.validate_plan(make_plan([shot]), scan, grouping)
+        self.assertFalse(result["ok"])
+        shot["review"] = ["[低置信] 两条 take 差异小"]
+        result = jy_roughcut.validate_plan(make_plan([shot]), scan, grouping)
+        self.assertTrue(result["ok"])
+
+    def test_unresolved_file_in_plan_is_an_error(self):
+        scan = make_scan("a.mp4", "b.mp4")
+        grouping = grouping_for({"01": "a.mp4"}, unresolved=[{"file": "b.mp4", "reason": "无法判断"}])
+        result = jy_roughcut.validate_plan(make_plan([make_shot("01", ["b.mp4"])]), scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("b.mp4" in e for e in result["errors"]))
+
+    def test_dissolve_duration_out_of_range_warns(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        shot = make_shot("01", ["a.mp4"], transition={"type": "dissolve", "duration": 1.5})
+        result = jy_roughcut.validate_plan(make_plan([shot]), scan, grouping)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["warnings"])
+
+    def test_unknown_transition_type_only_warns(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        shot = make_shot("01", ["a.mp4"], transition={"type": "flash"})
+        result = jy_roughcut.validate_plan(make_plan([shot]), scan, grouping)
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("只标注" in w for w in result["warnings"]))
+
+    def test_valid_plan_passes(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        result = jy_roughcut.validate_plan(make_plan([make_shot("01", ["a.mp4"])]), scan, grouping)
         self.assertTrue(result["ok"])
         self.assertEqual(result["errors"], [])
 

@@ -157,3 +157,116 @@ def validate_grouping(grouping: dict[str, Any], scan: dict[str, Any]) -> dict[st
                 warnings.append(f"shot {sid} take {tid}: segmented 但只有一个文件")
 
     return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
+def validate_plan(
+    plan: dict[str, Any],
+    scan: dict[str, Any],
+    grouping: dict[str, Any],
+) -> dict[str, Any]:
+    """校验剪辑决策表：区间、缺镜、置信度、unresolved 禁用与转场类型。"""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    canvas = plan.get("canvas") or {}
+    for key in ("width", "height", "ratio", "fps"):
+        if canvas.get(key) in (None, ""):
+            errors.append(f"canvas 缺少 {key}")
+    if not plan.get("episode"):
+        errors.append("episode 不能为空")
+    if not plan.get("source_root"):
+        errors.append("source_root 不能为空")
+    elif grouping.get("root") and plan.get("source_root") != grouping.get("root"):
+        warnings.append(
+            f"source_root 与分组表 root 不一致：{plan.get('source_root')} vs {grouping.get('root')}"
+        )
+
+    source_audio = plan.get("source_audio", "keep")
+    if source_audio not in {"keep", "mute"}:
+        errors.append(f"source_audio 非法：{source_audio}")
+
+    shot_files: dict[str, set[str]] = {}
+    for shot in grouping.get("shots", []):
+        sid = str(shot.get("shot"))
+        files: set[str] = set()
+        for take in shot.get("takes", []):
+            files.update(take.get("files") or [])
+        shot_files[sid] = files
+    unresolved_files = {item.get("file") for item in grouping.get("unresolved", [])}
+    clips = {c["file"]: c for c in scan.get("clips", [])}
+
+    seen: set[str] = set()
+    for entry in plan.get("shots") or []:
+        sid = str(entry.get("shot"))
+        if sid in seen:
+            errors.append(f"shot {sid}: 在 plan 里出现多次")
+        seen.add(sid)
+        if sid not in shot_files:
+            errors.append(f"shot {sid}: 不在分组表里")
+            continue
+        allowed = shot_files[sid]
+
+        if not entry.get("reason"):
+            errors.append(f"shot {sid}: 缺少 reason")
+        confidence = entry.get("confidence")
+        if (
+            not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or not 0 <= float(confidence) <= 1
+        ):
+            errors.append(f"shot {sid}: confidence 非法：{confidence}")
+        elif float(confidence) < 0.6 and not (entry.get("review") or []):
+            errors.append(f"shot {sid}: confidence {confidence} 低于 0.6，必须写入 review")
+
+        segments = entry.get("segments") or []
+        if not segments:
+            errors.append(f"shot {sid}: 没有任何片段")
+        for seg in segments:
+            name = seg.get("file")
+            if name not in allowed:
+                errors.append(f"shot {sid}: segment 文件不属于该镜头：{name}")
+            if name in unresolved_files:
+                errors.append(f"shot {sid}: 使用了 unresolved 素材：{name}")
+            duration = seg.get("duration")
+            start = seg.get("source_start", 0.0)
+            if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+                errors.append(f"shot {sid}: duration 非法：{duration}")
+                continue
+            if not isinstance(start, (int, float)) or isinstance(start, bool) or start < 0:
+                errors.append(f"shot {sid}: source_start 非法：{start}")
+                continue
+            meta = clips.get(name)
+            if meta is None:
+                errors.append(f"shot {sid}: 素材不在 scan 里：{name}")
+            elif meta.get("duration") is None:
+                errors.append(f"shot {sid}: 素材没有可用时长：{name}")
+            elif start + duration > meta["duration"] + 1e-6:
+                errors.append(
+                    f"shot {sid}: {name} 取用区间 {start}+{duration} 超出视频流时长 {meta['duration']}"
+                )
+
+        for alt in entry.get("alternates") or []:
+            name = alt.get("file")
+            if name not in allowed:
+                errors.append(f"shot {sid}: 备选文件不属于该镜头：{name}")
+            if name in unresolved_files:
+                errors.append(f"shot {sid}: 备选使用了 unresolved 素材：{name}")
+
+        transition = entry.get("transition_out") or {"type": "hard_cut"}
+        ttype = transition.get("type")
+        if ttype in {"hard_cut", "dissolve"}:
+            if ttype == "dissolve":
+                t_duration = transition.get("duration")
+                if (
+                    not isinstance(t_duration, (int, float))
+                    or isinstance(t_duration, bool)
+                    or not 0.3 <= float(t_duration) <= 0.8
+                ):
+                    warnings.append(f"shot {sid}: 叠化时长不在 0.3 到 0.8 秒：{t_duration}")
+        else:
+            warnings.append(f"shot {sid}: 转场类型 {ttype} 只标注不执行")
+
+    for sid in sorted(set(shot_files) - seen):
+        errors.append(f"shot {sid}: 分组表里有但 plan 里缺少")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
