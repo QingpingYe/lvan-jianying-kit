@@ -52,7 +52,7 @@
   - `duplicate(root: Path, template: str, target: str, *, allow_replace: bool = False) -> Path`
   - 测试辅助 `tests/test_jy_template.py::make_template_draft(root: Path, name: str, *, material_name: str = "占位.mp4", texts: tuple[str, ...] = ("第1集",), video_track: str = "main_video", text_track: str = "title") -> Path`（用 `object.__new__(VideoMaterial)` 造假素材，不碰真实媒体文件）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 import sys, tempfile, unittest
@@ -76,12 +76,12 @@ class DuplicateTests(unittest.TestCase):
             self.assertEqual(dst["draft_fold_path"], str(target).replace("\\", "/"))
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `& $py -m unittest discover -s tests -t . -v`（`$py` 为运行时 venv 的 python）
 Expected: FAIL，`ModuleNotFoundError: No module named 'jy_template'`（或 `AttributeError: duplicate`）
 
-- [ ] **Step 3: 实现骨架**
+- [x] **Step 3: 实现骨架**
 
 `tools/jy_template.py` 里：
 
@@ -89,12 +89,12 @@ Expected: FAIL，`ModuleNotFoundError: No module named 'jy_template'`（或 `Att
 - `read_draft`/`write_draft` 用 `project_content_path(project)` 定位时间线文件；`write_draft` 走 `update_project_json(project, lambda c: (c.clear(), c.update(content)))`，由它负责多时间线一致性校验与密文回写。
 - `duplicate` 自己走 `shutil.copytree(template_path, target_path, ignore=shutil.ignore_patterns(BACKUP_DIR), dirs_exist_ok=allow_replace)`，然后调用 `write_draft_meta_info(target_path, root=root)`；模板不存在抛 `FileNotFoundError`，目标已存在且未允许覆盖抛 `FileExistsError`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `& $py -m unittest discover -s tests -t . -v`
 Expected: PASS
 
-- [ ] **Step 5: 补三条边界测试并让它们通过**
+- [x] **Step 5: 补三条边界测试并让它们通过**
 
 ```python
     def test_duplicate_excludes_the_backup_directory(self): ...      # 模板里预置 .jianying-tool-backups/x.json，断言副本里没有
@@ -104,7 +104,7 @@ Expected: PASS
                                                                       # 断言 write_draft 抛 DraftDecodeError（沿用 update_project_json 的拒绝行为）
 ```
 
-- [ ] **Step 6: 跑测试并提交**
+- [x] **Step 6: 跑测试并提交**
 
 Run: `& $py -m unittest discover -s tests -t . -v`，Expected: PASS
 
@@ -139,7 +139,7 @@ git commit -m "feat: 模板批量核心（草稿读写与复制）"
   ```
   时间一律换算成秒（微秒 / `SEC`，保留 6 位小数）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 class SlotTests(unittest.TestCase):
@@ -152,16 +152,16 @@ class SlotTests(unittest.TestCase):
         # 再造一条特效轨：断言 replaceable=False
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `& $py -m unittest tests.test_jy_template.SlotTests -v`
 Expected: FAIL，`AttributeError: module 'jy_template' has no attribute 'list_slots'`
 
-- [ ] **Step 3: 实现 `list_slots`**
+- [x] **Step 3: 实现 `list_slots`**
 
 直接用 `jianying_tool.inspect.inspect_draft(root / draft)`：它已经给出每段的 `index` / `material_name` / `material_path` / `target_timerange` / `source_timerange` / `speed` / `text`。`replaceable` 由 `pyJianYingDraft.track.TrackType` 的 `allow_modify` 决定（`video`/`audio`/`text` 为 True）；`ambiguous_name` 在"同类型同名字的轨道数 > 1"时为 True。轨道顺序按 `inspect_draft` 的 `tracks` 顺序原样保留。
 
-- [ ] **Step 4: 跑测试确认通过并提交**
+- [x] **Step 4: 跑测试确认通过并提交**
 
 Run: `& $py -m unittest tests.test_jy_template -v`，Expected: PASS
 
@@ -190,7 +190,7 @@ git commit -m "feat: 模板槽位枚举"
   - `import_track(root: Path, source_draft: str, target_draft: str, track: str, *, offset: float = 0.0,
     new_name: str | None = None) -> dict`，返回 `{"source": ..., "target": ..., "track": ..., "imported": True}`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 class ApplyRowTests(unittest.TestCase):
@@ -207,12 +207,12 @@ class ApplyRowTests(unittest.TestCase):
 
 `test_shorter_material_truncates_the_segment_and_warns` 的断言：原片段 target 时长 2.0s，新素材 1.0s（假素材 duration 设为 `1_000_000`），替换后 `target_timerange.duration == 1_000_000`，且 `warnings` 里出现该轨道名与片段序号。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `& $py -m unittest tests.test_jy_template.ApplyRowTests -v`
 Expected: FAIL，`AttributeError: module 'jy_template' has no attribute 'apply_row'`
 
-- [ ] **Step 3: 实现影子管线与三类替换**
+- [x] **Step 3: 实现影子管线与三类替换**
 
 `_edit_with_shadow(project: Path, operation) -> None`：
 
@@ -232,12 +232,12 @@ Expected: FAIL，`AttributeError: module 'jy_template' has no attribute 'apply_r
 `source.get_imported_track(...)` 找到那条轨道，再在目标草稿的脚本上 `script.import_track(source, track, offset=..., new_name=...)`。
 目标里已存在同名轨道或同一素材 id 时抛 `TemplateError`（底层保留素材 id，明确不支持重复导入）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `& $py -m unittest tests.test_jy_template.ApplyRowTests -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add tools/jy_template.py tests/test_jy_template.py
@@ -264,7 +264,7 @@ git commit -m "feat: 模板单行替换"
     ```
   - `rows` 参数是 1-based 行号集合，`None` 表示全部
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 class FillTests(unittest.TestCase):
@@ -278,12 +278,12 @@ class FillTests(unittest.TestCase):
     def test_require_all_slots_turns_warnings_into_a_failed_row(self): ...  # 顶层 "require_all_slots": true
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `& $py -m unittest tests.test_jy_template.FillTests -v`
 Expected: FAIL，`AttributeError: module 'jy_template' has no attribute 'fill'`
 
-- [ ] **Step 3: 实现 `fill`**
+- [x] **Step 3: 实现 `fill`**
 
 预检（`dry_run` 也执行，且只读）：模板目录存在 → 逐行解析目标名（缺省 `<template>-<行号>`）→ 检查目标不重名、不撞已有草稿 → 检查所有素材文件存在（相对路径按 `base_dir` 解析）→ 解析轨道与槽位。
 
@@ -292,7 +292,7 @@ Expected: FAIL，`AttributeError: module 'jy_template' has no attribute 'fill'`
 未填槽位：把清单**没有覆盖**的槽位逐条写进该行 `unfilled_slots`；清单顶层 `"require_all_slots": true` 时，
 非空 `unfilled_slots` 直接让该行失败（错误文案要指出第一个未填槽位）。
 
-- [ ] **Step 4: 跑测试确认通过并提交**
+- [x] **Step 4: 跑测试确认通过并提交**
 
 Run: `& $py -m unittest tests.test_jy_template -v`，Expected: PASS
 
@@ -315,7 +315,7 @@ git commit -m "feat: 模板批量编排与报告"
 - Consumes: `jy_template.load_plan` / `fill` / `resolve_root` / `TemplateError`
 - Produces: 命令行 `python tools/template_fill.py --plan <清单> [--root <草稿目录>] [--rows 1-3] [--dry-run] [--python <解释器>]`；stdout 最后一段是一个 JSON 报告，有失败行时退出码 1、预检失败时退出码 2
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 class CliTests(unittest.TestCase):
@@ -325,19 +325,19 @@ class CliTests(unittest.TestCase):
     def test_missing_plan_file_exits_2(self): ...
 ```
 
-- [ ] **Step 2: 跑测试确认失败并实现**
+- [x] **Step 2: 跑测试确认失败并实现**
 
 Run: `& $py -m unittest tests.test_jy_template.CliTests -v`，Expected: FAIL（脚本不存在）
 
 实现要点：`--rows` 解析 `1-3` 与 `1,3` 两种写法；复用 `build_draft.py` 的既有约定（读同级或上级的 `jianying-paths.json` 注入 `JIANYING_INSTALL_ROOT` / `JY_INSTALL_DIR` / `JIANYING_DRAFT_ROOT`；`--python` 未给时用 `sys.executable`）；人类可读的逐行进度写 stderr，JSON 报告写 stdout。
 
-- [ ] **Step 3: 示例清单与技能**
+- [x] **Step 3: 示例清单与技能**
 
 `examples/templatefill.example.json` 按设计文档 §9 的字段给出可读示例（模板名、defaults、两行、by_name/by_slot/texts 各有出现）。
 
 `skills/template-batch/SKILL.md` 的 frontmatter `name: template-batch`，description 要写明触发场景（"按模板批量出片""剪同款""套模板出 N 集"）。正文覆盖：路径解析（runtime.json / `<root>`）、先 `list_template_slots` 再写清单、清单字段表、跑 `template_fill.py`、怎么读报告（截断警告、失败行、未填槽位）、禁止事项（剪映开着目标草稿时不要跑、不要填满不打算换的槽位）。
 
-- [ ] **Step 4: 跑测试确认通过并提交**
+- [x] **Step 4: 跑测试确认通过并提交**
 
 Run: `& $py -m unittest discover -s tests -t . -v`，Expected: PASS
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -18,6 +19,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import jy_template  # noqa: E402
 
@@ -648,6 +651,37 @@ class CliTests(TempDraftCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn("清单", result.stderr)
+
+
+class McpExtTests(TempDraftCase):
+    """MCP 薄包装：注册了哪三个工具、返回什么、出错怎么抛。"""
+
+    def test_build_server_registers_the_three_tools(self) -> None:
+        from mcp_ext.server import build_server
+
+        tools = asyncio.run(build_server().list_tools())
+        self.assertEqual(
+            {tool.name for tool in tools},
+            {"list_template_slots", "duplicate_local_draft", "import_local_track"},
+        )
+
+    def test_duplicate_tool_returns_the_new_draft_path(self) -> None:
+        from mcp_ext.server import duplicate_local_draft
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            result = duplicate_local_draft("模板", "第1集", root=str(root))
+            self.assertEqual(Path(result["draft"]).resolve(), (root / "第1集").resolve())
+            self.assertTrue((root / "第1集").is_dir())
+
+    def test_tools_reject_a_missing_source_draft(self) -> None:
+        from mcp_ext.server import duplicate_local_draft
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 核心对"源草稿不存在"的契约就是 FileNotFoundError（见 duplicate 的约定）
+            with self.assertRaises(FileNotFoundError):
+                duplicate_local_draft("不存在", "第1集", root=tmp)
 
 
 if __name__ == "__main__":

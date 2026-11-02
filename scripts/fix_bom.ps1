@@ -1,5 +1,6 @@
 ﻿# 给本仓库的 .ps1 补 UTF-8 BOM（Windows PowerShell 5.1 需要 BOM 才正确识别中文）。
 # 重复执行安全。用法：powershell -ExecutionPolicy Bypass -File scripts\fix_bom.ps1
+# 含中文的 .json 同样需要 BOM：否则 Windows PowerShell 5.1 会把它读成非法 JSON。
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
@@ -7,7 +8,8 @@ $files = @(
     (Join-Path $root 'install.ps1'),
     (Join-Path $root 'scripts\launch_mcp.ps1'),
     (Join-Path $root 'scripts\validate_plugin.ps1'),
-    (Join-Path $root 'scripts\fix_bom.ps1')
+    (Join-Path $root 'scripts\fix_bom.ps1'),
+    (Join-Path $root 'examples\templatefill.example.json')
 )
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath $file)) { continue }

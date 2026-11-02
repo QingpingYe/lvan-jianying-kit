@@ -1,4 +1,4 @@
-{
+﻿{
   "template": "Codex 剪映工具演示",
   "defaults": { "shrink": "cut_tail", "extend": "cut_material_tail" },
   "rows": [

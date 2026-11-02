@@ -1,11 +1,15 @@
 ﻿# 剪映 MCP 启动器：解析运行时与剪映路径，然后把 stdio 交给 MCP 服务器。
 # 这个脚本会被 Codex 作为 MCP server 进程直接拉起，不要在里面等待用户输入。
+param([string]$Module = 'jianying_tool.mcp_server')
+
 $ErrorActionPreference = 'Stop'
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $env:PYTHONIOENCODING = 'utf-8'
 
 $pluginRoot = Split-Path -Parent $PSScriptRoot
+# 插件自带的模块（mcp_ext）在插件根目录下，靠 PYTHONPATH 才找得到
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$pluginRoot;$env:PYTHONPATH" } else { $pluginRoot }
 
 function Get-JianyingKitRuntime {
     param([string]$PluginRoot)
@@ -56,10 +60,10 @@ Run the plugin setup skill in Codex, or do it manually:
     exit 127
 }
 
-$probe = & $python -c "import jianying_tool.mcp_server" 2>&1
+$probe = & $python -c "import importlib; importlib.import_module('$Module')" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Error @"
-[jianying-kit] jianying-tool is not importable with this interpreter: $python
+MCP module is not importable with this interpreter: $Module ($python)
 Run the plugin setup skill to reinstall dependencies, or do it manually:
   powershell -ExecutionPolicy Bypass -File "$pluginRoot\install.ps1" -RuntimeRoot "$runtimeDir"
 Last error: $probe
@@ -67,5 +71,5 @@ Last error: $probe
     exit 1
 }
 
-& $python -m jianying_tool.mcp_server
+& $python -m $Module
 exit $LASTEXITCODE
