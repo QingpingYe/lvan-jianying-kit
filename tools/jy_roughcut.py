@@ -159,6 +159,34 @@ def validate_grouping(grouping: dict[str, Any], scan: dict[str, Any]) -> dict[st
     return {"ok": not errors, "errors": errors, "warnings": warnings}
 
 
+def plan_to_shotlist(plan: dict[str, Any], *, draft_name: str | None = None) -> dict[str, Any]:
+    """把剪辑决策表摊平成 build_draft.py 能吃的分镜表。"""
+    name = draft_name or plan.get("draft_name") or f"{plan['episode']}-粗剪"
+    shots: list[dict[str, Any]] = []
+    cursor = 0.0
+    for entry in plan.get("shots") or []:
+        for seg in entry.get("segments") or []:
+            duration = float(seg["duration"])
+            shots.append(
+                {
+                    "file": seg["file"],
+                    "source_start": float(seg.get("source_start", 0.0)),
+                    "duration": duration,
+                    "target_start": round(cursor, 6),
+                }
+            )
+            cursor += duration
+    shotlist: dict[str, Any] = {
+        "draft_name": name,
+        "canvas": dict(plan.get("canvas") or {}),
+        "shots": shots,
+    }
+    for key in ("subtitles", "bgm", "voiceover"):
+        if plan.get(key):
+            shotlist[key] = plan[key]
+    return shotlist
+
+
 def validate_plan(
     plan: dict[str, Any],
     scan: dict[str, Any],

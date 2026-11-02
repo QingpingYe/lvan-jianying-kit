@@ -222,5 +222,43 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
 
 
+class ShotlistTests(unittest.TestCase):
+    def test_target_start_accumulates(self):
+        plan = make_plan(
+            [
+                make_shot("01", ["a.mp4"], durations=[2.0]),
+                make_shot("02", ["b.mp4"], durations=[3.5]),
+                make_shot("03", ["c.mp4"], durations=[1.0]),
+            ]
+        )
+        shotlist = jy_roughcut.plan_to_shotlist(plan)
+        self.assertEqual([s["target_start"] for s in shotlist["shots"]], [0.0, 2.0, 5.5])
+        self.assertEqual([s["duration"] for s in shotlist["shots"]], [2.0, 3.5, 1.0])
+
+    def test_default_draft_name_uses_episode(self):
+        plan = make_plan([make_shot("01", ["a.mp4"])], episode="第3集")
+        shotlist = jy_roughcut.plan_to_shotlist(plan)
+        self.assertEqual(shotlist["draft_name"], "第3集-粗剪")
+
+    def test_explicit_draft_name_wins(self):
+        plan = make_plan([make_shot("01", ["a.mp4"])])
+        shotlist = jy_roughcut.plan_to_shotlist(plan, draft_name="自定义名")
+        self.assertEqual(shotlist["draft_name"], "自定义名")
+
+    def test_passthrough_blocks_survive(self):
+        plan = make_plan(
+            [make_shot("01", ["a.mp4"])],
+            extra={
+                "subtitles": {"srt": "ep03.srt"},
+                "bgm": {"file": "bgm.m4a", "volume": 0.35},
+                "voiceover": {"script": "lines.txt"},
+            },
+        )
+        shotlist = jy_roughcut.plan_to_shotlist(plan)
+        self.assertEqual(shotlist["subtitles"], {"srt": "ep03.srt"})
+        self.assertEqual(shotlist["bgm"], {"file": "bgm.m4a", "volume": 0.35})
+        self.assertEqual(shotlist["voiceover"], {"script": "lines.txt"})
+
+
 if __name__ == "__main__":
     unittest.main()
