@@ -443,3 +443,136 @@ def frames(
         sheets.append(str(sheet_path))
 
     return {"sheets": sheets, "shots": len(sheets)}
+
+
+def _default_builder_runner(args: list[str]) -> dict[str, Any]:  # pragma: no cover - 需要本机环境
+    """默认用 build_draft.py 建草稿。"""
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / "build_draft.py"), *args]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise RoughcutError(
+            f"build_draft.py 失败（exit {proc.returncode}）：\n{proc.stdout}\n{proc.stderr}"
+        )
+    return {"stdout": (proc.stdout or "").strip()}
+
+
+def _default_cli_runner(args: list[str]) -> dict[str, Any]:  # pragma: no cover - 需要本机环境
+    """默认用 jianying_tool.cli 挂转场/静音。"""
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-m", "jianying_tool.cli", *args]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise RoughcutError(
+            f"jianying_tool.cli 失败（exit {proc.returncode}）：{' '.join(args)}\n{proc.stdout}\n{proc.stderr}"
+        )
+    return {}
+
+
+def build(
+    plan: dict[str, Any],
+    scan: dict[str, Any],
+    grouping: dict[str, Any],
+    out: Path,
+    *,
+    draft_name: str | None = None,
+    existing: bool = False,
+    dry_run: bool = False,
+    run_builder: Callable[[list[str]], dict[str, Any]] | None = None,
+    run_transition: Callable[[list[str]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """校验通过后：写 shotlist → 建草稿 → 挂叠化 → 按需静音。"""
+    out = Path(out)
+    validation = validate_plan(plan, scan, grouping)
+    if validation["errors"]:
+        raise RoughcutError("决策表校验失败：\n  " + "\n  ".join(validation["errors"]))
+
+    name = draft_name or plan.get("draft_name") or f"{plan['episode']}-粗剪"
+    shotlist = plan_to_shotlist(plan, draft_name=name)
+    shotlist_path = out / "shotlist.json"
+    track = plan.get("video_track", "main_video")
+
+    shots = plan.get("shots") or []
+    transitions: list[tuple[int, float]] = []
+    skipped: list[str] = []
+    cursor = 0
+    for index, entry in enumerate(shots):
+        segments = entry.get("segments") or []
+        transition = entry.get("transition_out") or {}
+        if transition.get("type") == "dissolve":
+            if index < len(shots) - 1:
+                duration = transition.get("duration") or 0.5
+                transitions.append((cursor + len(segments) - 1, float(duration)))
+            else:
+                skipped.append("最后一个镜头的 transition_out 无处可挂，已跳过")
+        cursor += len(segments)
+    total_segments = cursor
+    mute = plan.get("source_audio") == "mute"
+
+    if dry_run:
+        return {
+            "shotlist": str(shotlist_path),
+            "transitions_planned": len(transitions),
+            "muted_planned": total_segments if mute else 0,
+        }
+
+    out.mkdir(parents=True, exist_ok=True)
+    shotlist_path.write_text(
+        json.dumps(shotlist, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    builder = run_builder or _default_builder_runner
+    builder_args = ["--shotlist", str(shotlist_path)]
+    if draft_name:
+        builder_args += ["--name", name]
+    if existing:
+        builder_args += ["--existing"]
+    builder_result = builder(builder_args) or {}
+
+    runner = run_transition or _default_cli_runner
+    applied = 0
+    for segment_index, duration in transitions:
+        runner(
+            [
+                "transition",
+                "--draft",
+                name,
+                "--track",
+                track,
+                "--segment",
+                str(segment_index),
+                "--name",
+                "叠化",
+                "--duration",
+                str(duration),
+            ]
+        )
+        applied += 1
+
+    muted = 0
+    if mute:
+        for segment_index in range(total_segments):
+            runner(
+                [
+                    "edit-segment",
+                    "--draft",
+                    name,
+                    "--track",
+                    track,
+                    "--segment",
+                    str(segment_index),
+                    "--mute",
+                ]
+            )
+            muted += 1
+
+    return {
+        "shotlist": str(shotlist_path),
+        "builder": builder_result,
+        "transitions_applied": applied,
+        "muted_segments": muted,
+        "skipped": skipped,
+    }

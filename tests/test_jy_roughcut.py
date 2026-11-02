@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -313,6 +315,95 @@ class FramesTests(unittest.TestCase):
             self.assertTrue(all("shot-" in Path(p).name for p in result["sheets"]))
             with Image.open(result["sheets"][0]) as img:
                 self.assertGreater(img.width, 0)
+
+
+class BuildTests(unittest.TestCase):
+    def test_build_dry_run_writes_nothing_and_calls_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            plan = make_plan([make_shot("01", ["a.mp4"])])
+            calls = []
+            result = jy_roughcut.build(
+                plan, scan, grouping, out,
+                dry_run=True,
+                run_builder=lambda args: calls.append(("builder", list(args))) or {},
+                run_transition=lambda args: calls.append(("transition", list(args))) or {},
+            )
+            self.assertEqual(calls, [])
+            self.assertFalse(out.exists())
+            self.assertEqual(result["transitions_planned"], 0)
+
+    def test_build_applies_dissolve_on_the_previous_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4", "b.mp4")
+            grouping = grouping_for({"01": "a.mp4", "02": "b.mp4"})
+            plan = make_plan(
+                [
+                    make_shot("01", ["a.mp4"], transition={"type": "dissolve", "duration": 0.5}),
+                    make_shot("02", ["b.mp4"]),
+                ]
+            )
+            calls = []
+            result = jy_roughcut.build(
+                plan, scan, grouping, out,
+                run_builder=lambda args: calls.append(("builder", list(args))) or {"draft": "第3集-粗剪"},
+                run_transition=lambda args: calls.append(("transition", list(args))) or {},
+            )
+            kinds = [c[0] for c in calls]
+            self.assertIn("builder", kinds)
+            builder_args = next(args for kind, args in calls if kind == "builder")
+            self.assertIn("--shotlist", builder_args)
+            trans = next(args for kind, args in calls if kind == "transition")
+            self.assertEqual(trans[:2], ["transition", "--draft"])
+            index = trans.index("--segment")
+            self.assertEqual(trans[index + 1], "0")
+            self.assertIn("叠化", trans)
+            self.assertEqual(result["transitions_applied"], 1)
+            self.assertTrue((out / "shotlist.json").is_file())
+
+    def test_build_mute_adds_edit_segment_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            plan = make_plan([make_shot("01", ["a.mp4"])], extra={"source_audio": "mute"})
+            calls = []
+            result = jy_roughcut.build(
+                plan, scan, grouping, out,
+                run_builder=lambda args: {},
+                run_transition=lambda args: calls.append(list(args)) or {},
+            )
+            self.assertEqual(result["muted_segments"], 1)
+            edit = next(args for args in calls if args and args[0] == "edit-segment")
+            self.assertIn("--mute", edit)
+
+    def test_cli_validate_exit_codes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            out.mkdir(parents=True)
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            good = make_plan([make_shot("01", ["a.mp4"])])
+            bad = make_plan([make_shot("01", ["a.mp4"], durations=[5.0])])
+            (out / "scan.json").write_text(json.dumps(scan), encoding="utf-8")
+            (out / "grouping.json").write_text(json.dumps(grouping), encoding="utf-8")
+            (out / "roughcut-good.json").write_text(json.dumps(good), encoding="utf-8")
+            (out / "roughcut-bad.json").write_text(json.dumps(bad), encoding="utf-8")
+            cli = str(ROOT / "tools" / "roughcut.py")
+
+            def run(plan_path):
+                return subprocess.run(
+                    [sys.executable, cli, "validate", "--grouping", str(out / "grouping.json"),
+                     "--plan", plan_path, "--out", str(out)],
+                    capture_output=True, text=True,
+                )
+
+            self.assertEqual(run(str(out / "roughcut-good.json")).returncode, 0)
+            self.assertEqual(run(str(out / "roughcut-bad.json")).returncode, 1)
+            self.assertEqual(run(str(out / "missing.json")).returncode, 2)
 
 
 if __name__ == "__main__":
