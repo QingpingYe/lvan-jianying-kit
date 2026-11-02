@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import jy_template  # noqa: E402
+import jy_roughcut  # noqa: E402
 
 from mcp.server.mcpserver import MCPServer  # noqa: E402
 
@@ -56,15 +58,65 @@ def import_local_track(
     )
 
 
+def scan_roughcut_folder(folder: str, out: str | None = None) -> dict[str, Any]:
+    """清点一集素材并写出 scan.json，供 AI 做命名推断与看片。"""
+    return jy_roughcut.scan(
+        Path(folder).expanduser(),
+        Path(out).expanduser() if out else None,
+    )
+
+
+def validate_roughcut_plan(plan_path: str, grouping_path: str | None = None) -> dict[str, Any]:
+    """校验分组表与决策表；scan.json / grouping.json 默认从 plan 同目录读。"""
+    plan_file = Path(plan_path).expanduser()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    grouping_file = (
+        Path(grouping_path).expanduser() if grouping_path else plan_file.parent / "grouping.json"
+    )
+    grouping = json.loads(grouping_file.read_text(encoding="utf-8"))
+    scan = json.loads((plan_file.parent / "scan.json").read_text(encoding="utf-8"))
+    g = jy_roughcut.validate_grouping(grouping, scan)
+    p = jy_roughcut.validate_plan(plan, scan, grouping)
+    return {
+        "ok": g["ok"] and p["ok"],
+        "errors": g["errors"] + p["errors"],
+        "warnings": g["warnings"] + p["warnings"],
+    }
+
+
+def build_roughcut_draft(
+    plan_path: str,
+    draft_name: str | None = None,
+    existing: bool = False,
+    out: str | None = None,
+) -> dict[str, Any]:
+    """按决策表建剪映草稿（含叠化与静音），返回 build 报告。"""
+    plan_file = Path(plan_path).expanduser()
+    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    out_dir = Path(out).expanduser() if out else plan_file.parent
+    grouping = json.loads((out_dir / "grouping.json").read_text(encoding="utf-8"))
+    scan = json.loads((out_dir / "scan.json").read_text(encoding="utf-8"))
+    return jy_roughcut.build(
+        plan, scan, grouping, out_dir, draft_name=draft_name, existing=existing
+    )
+
+
 def build_server() -> MCPServer:
-    """建好带三个工具的服务器；启动前先把剪映路径注入环境变量。"""
+    """建好带六个工具的服务器；启动前先把剪映路径注入环境变量。"""
     jy_template.apply_jianying_env()
     server = MCPServer(
         "jianying-ext",
         title="Jianying Templates",
-        description="模板批量出片：列槽位、复制草稿、跨草稿搬轨道。",
+        description="模板批量出片与智能粗剪：列槽位、复制草稿、搬轨道、清点素材、校验决策表、按决策表建草稿。",
     )
-    for tool in (list_template_slots, duplicate_local_draft, import_local_track):
+    for tool in (
+        list_template_slots,
+        duplicate_local_draft,
+        import_local_track,
+        scan_roughcut_folder,
+        validate_roughcut_plan,
+        build_roughcut_draft,
+    ):
         server.tool()(tool)
     return server
 

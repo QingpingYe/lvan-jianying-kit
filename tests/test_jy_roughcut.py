@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -404,6 +405,44 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(run(str(out / "roughcut-good.json")).returncode, 0)
             self.assertEqual(run(str(out / "roughcut-bad.json")).returncode, 1)
             self.assertEqual(run(str(out / "missing.json")).returncode, 2)
+
+
+class McpTests(unittest.TestCase):
+    def test_build_server_registers_six_tools(self):
+        sys.path.insert(0, str(ROOT))
+        import mcp_ext.server as ext
+
+        tools = asyncio.run(ext.build_server().list_tools())
+        names = {tool.name for tool in tools}
+        self.assertEqual(
+            names,
+            {
+                "list_template_slots",
+                "duplicate_local_draft",
+                "import_local_track",
+                "scan_roughcut_folder",
+                "validate_roughcut_plan",
+                "build_roughcut_draft",
+            },
+        )
+
+    def test_validate_tool_reports_errors_from_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            out.mkdir(parents=True)
+            (out / "scan.json").write_text(json.dumps(make_scan("a.mp4")), encoding="utf-8")
+            (out / "grouping.json").write_text(json.dumps(grouping_for({"01": "a.mp4"})), encoding="utf-8")
+            plan_path = out / "roughcut.json"
+            plan_path.write_text(
+                json.dumps(make_plan([make_shot("01", ["a.mp4"], durations=[5.0])])),
+                encoding="utf-8",
+            )
+            sys.path.insert(0, str(ROOT))
+            import mcp_ext.server as ext
+
+            result = ext.validate_roughcut_plan(str(plan_path))
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("超出" in e for e in result["errors"]))
 
 
 if __name__ == "__main__":
