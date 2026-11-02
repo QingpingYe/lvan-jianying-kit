@@ -298,3 +298,53 @@ def validate_plan(
         errors.append(f"shot {sid}: 分组表里有但 plan 里缺少")
 
     return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
+def report(plan: dict[str, Any], grouping: dict[str, Any] | None = None) -> str:
+    """生成人读报告（Markdown 文本；写文件是调用方的事）。"""
+    shots = plan.get("shots") or []
+    total = sum(
+        float(seg.get("duration", 0))
+        for shot in shots
+        for seg in (shot.get("segments") or [])
+    )
+    lines = [
+        f"# 粗剪报告：{plan.get('episode', '')}",
+        "",
+        f"- 总时长：{total:.2f} 秒",
+        f"- 镜头数：{len(shots)}",
+        "",
+        "## 逐镜表",
+        "",
+        "| 镜号 | 首选素材 | 取用区间 | 理由 | 置信度 | 转场 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for shot in shots:
+        sid = shot.get("shot")
+        segments = shot.get("segments") or []
+        files = " + ".join(str(seg.get("file")) for seg in segments)
+        ranges = " + ".join(
+            f"{seg.get('source_start', 0)}~{round(float(seg.get('source_start', 0)) + float(seg.get('duration', 0)), 3)}"
+            for seg in segments
+        )
+        reason = str(shot.get("reason", "")).replace("|", "\\|")
+        confidence = shot.get("confidence")
+        transition = (shot.get("transition_out") or {}).get("type", "hard_cut")
+        lines.append(f"| {sid} | {files} | {ranges} | {reason} | {confidence} | {transition} |")
+
+    lines += ["", "## 待确认清单", ""]
+    items: list[str] = []
+    for item in (grouping or {}).get("unresolved", []):
+        items.append(f"- 未归类素材：{item.get('file')}（{item.get('reason', '')}）")
+    for shot in shots:
+        confidence = shot.get("confidence")
+        low = (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and float(confidence) < 0.6
+        )
+        if low or (shot.get("review") or []):
+            detail = "；".join(str(x) for x in (shot.get("review") or []))
+            items.append(f"- 镜头 {shot.get('shot')}：{detail or '低置信，需人工复核'}")
+    lines += items or ["- 无"]
+    return "\n".join(lines)

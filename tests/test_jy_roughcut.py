@@ -260,5 +260,28 @@ class ShotlistTests(unittest.TestCase):
         self.assertEqual(shotlist["voiceover"], {"script": "lines.txt"})
 
 
+class ReportTests(unittest.TestCase):
+    def test_report_lists_unresolved_and_low_confidence(self):
+        grouping = grouping_for(
+            {"07": "a.mp4"},
+            unresolved=[{"file": "unresolved.mp4", "reason": "无法判断"}],
+        )
+        shot = make_shot("07", ["a.mp4"], confidence=0.5, review=["[低置信] 两条 take 差异小"])
+        text = jy_roughcut.report(make_plan([shot]), grouping)
+        self.assertIn("unresolved.mp4", text)
+        self.assertIn("07", text)
+        self.assertIn("待确认", text)
+
+    def test_report_includes_timeline_total(self):
+        plan = make_plan(
+            [
+                make_shot("01", ["a.mp4"], durations=[2.0]),
+                make_shot("02", ["b.mp4"], durations=[3.0]),
+            ]
+        )
+        text = jy_roughcut.report(plan)
+        self.assertIn("5.00", text)
+
+
 if __name__ == "__main__":
     unittest.main()
