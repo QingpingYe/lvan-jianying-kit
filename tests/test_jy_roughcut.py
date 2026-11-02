@@ -319,6 +319,43 @@ class FramesTests(unittest.TestCase):
 
 
 class BuildTests(unittest.TestCase):
+    def test_build_refuses_incomplete_grouping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4", "b.mp4")
+            grouping = grouping_for({"01": "a.mp4"})  # b.mp4 未被覆盖
+            plan = make_plan([make_shot("01", ["a.mp4"])])
+            with self.assertRaises(jy_roughcut.RoughcutError):
+                jy_roughcut.build(
+                    plan, scan, grouping, out,
+                    run_builder=lambda args: {},
+                    run_transition=lambda args: {},
+                )
+
+    def test_build_resolves_paths_against_source_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "第3集"
+            source.mkdir()
+            out = source / "roughcut"
+            scan = make_scan("a.mp4", root=str(source))
+            grouping = make_grouping(
+                shots=[{"shot": "01", "takes": [{"take": "01", "kind": "single", "files": ["a.mp4"]}]}],
+                root=str(source),
+            )
+            plan = make_plan(
+                [make_shot("01", ["a.mp4"])],
+                source_root=str(source),
+                extra={"subtitles": {"srt": "ep03.srt"}},
+            )
+            jy_roughcut.build(
+                plan, scan, grouping, out,
+                run_builder=lambda args: {},
+                run_transition=lambda args: {},
+            )
+            shotlist = json.loads((out / "shotlist.json").read_text(encoding="utf-8"))
+            self.assertEqual(Path(shotlist["shots"][0]["file"]), (source / "a.mp4").resolve())
+            self.assertEqual(Path(shotlist["subtitles"]["srt"]), (source / "ep03.srt").resolve())
+
     def test_build_dry_run_writes_nothing_and_calls_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "roughcut"

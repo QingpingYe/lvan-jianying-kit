@@ -473,6 +473,12 @@ def _default_cli_runner(args: list[str]) -> dict[str, Any]:  # pragma: no cover 
     return {}
 
 
+def _resolve_from(base: Path, value: str) -> str:
+    """相对路径按 base 解析成绝对路径；绝对路径原样返回。"""
+    path = Path(value)
+    return str(path if path.is_absolute() else (base / path).resolve())
+
+
 def build(
     plan: dict[str, Any],
     scan: dict[str, Any],
@@ -487,12 +493,23 @@ def build(
 ) -> dict[str, Any]:
     """校验通过后：写 shotlist → 建草稿 → 挂叠化 → 按需静音。"""
     out = Path(out)
+    grouping_validation = validate_grouping(grouping, scan)
     validation = validate_plan(plan, scan, grouping)
-    if validation["errors"]:
-        raise RoughcutError("决策表校验失败：\n  " + "\n  ".join(validation["errors"]))
+    errors = grouping_validation["errors"] + validation["errors"]
+    if errors:
+        raise RoughcutError("校验失败：\n  " + "\n  ".join(errors))
 
     name = draft_name or plan.get("draft_name") or f"{plan['episode']}-粗剪"
     shotlist = plan_to_shotlist(plan, draft_name=name)
+    source_root = Path(plan["source_root"])
+    shotlist["shots"] = [
+        {**entry, "file": _resolve_from(source_root, entry["file"])}
+        for entry in shotlist["shots"]
+    ]
+    for key, field in (("subtitles", "srt"), ("bgm", "file"), ("voiceover", "script")):
+        block = shotlist.get(key)
+        if isinstance(block, dict) and block.get(field):
+            shotlist[key] = {**block, field: _resolve_from(source_root, block[field])}
     shotlist_path = out / "shotlist.json"
     track = plan.get("video_track", "main_video")
 
