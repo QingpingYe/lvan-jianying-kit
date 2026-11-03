@@ -1,7 +1,7 @@
-"""模板批量出片的 MCP 工具层。
+"""模板批量出片与智能粗剪的 MCP 工具层。
 
-三个工具都是 ``tools/jy_template.py`` 的薄包装：真正的读写、替换、编排逻辑在那边，
-这里只负责把参数接过来、把结果变成 MCP 能序列化的形状。
+工具都是 ``tools/jy_template.py`` / ``tools/jy_roughcut.py`` 的薄包装：真正的读写、
+替换、校验、编排逻辑在那边，这里只负责把参数接过来、把结果变成 MCP 能序列化的形状。
 """
 
 from __future__ import annotations
@@ -21,6 +21,11 @@ from mcp.server.mcpserver import MCPServer  # noqa: E402
 
 def _root(value: str | None) -> Path:
     return jy_template.resolve_root(value)
+
+
+def _read_json(path: Path) -> Any:
+    """读用户 JSON：兼容 Windows PowerShell 5.1 写出的 UTF-8 BOM。"""
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def list_template_slots(draft: str, root: str | None = None) -> dict[str, Any]:
@@ -69,14 +74,14 @@ def scan_roughcut_folder(folder: str, out: str | None = None) -> dict[str, Any]:
 def validate_roughcut_plan(plan_path: str, grouping_path: str | None = None) -> dict[str, Any]:
     """校验分组表与决策表；scan.json / grouping.json 默认从 plan 同目录读。"""
     plan_file = Path(plan_path).expanduser()
-    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    plan = _read_json(plan_file)
     grouping_file = (
         Path(grouping_path).expanduser() if grouping_path else plan_file.parent / "grouping.json"
     )
-    grouping = json.loads(grouping_file.read_text(encoding="utf-8"))
-    scan = json.loads((plan_file.parent / "scan.json").read_text(encoding="utf-8"))
-    g = jy_roughcut.validate_grouping(grouping, scan)
-    p = jy_roughcut.validate_plan(plan, scan, grouping)
+    grouping = _read_json(grouping_file)
+    scan = _read_json(plan_file.parent / "scan.json")
+    g = jy_roughcut.validate_grouping(grouping, scan, check_files=True)
+    p = jy_roughcut.validate_plan(plan, scan, grouping, check_files=True)
     return {
         "ok": g["ok"] and p["ok"],
         "errors": g["errors"] + p["errors"],
@@ -92,10 +97,10 @@ def build_roughcut_draft(
 ) -> dict[str, Any]:
     """按决策表建剪映草稿（含叠化与静音），返回 build 报告。"""
     plan_file = Path(plan_path).expanduser()
-    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    plan = _read_json(plan_file)
     out_dir = Path(out).expanduser() if out else plan_file.parent
-    grouping = json.loads((out_dir / "grouping.json").read_text(encoding="utf-8"))
-    scan = json.loads((out_dir / "scan.json").read_text(encoding="utf-8"))
+    grouping = _read_json(out_dir / "grouping.json")
+    scan = _read_json(out_dir / "scan.json")
     return jy_roughcut.build(
         plan, scan, grouping, out_dir, draft_name=draft_name, existing=existing
     )

@@ -2,7 +2,7 @@
 """智能粗剪命令行：scan / frames / validate / build / report。
 
 判断类工作（命名推断、看片、take 择优）在会话里由 AI 完成；本脚本只跑
-确定性事务。退出码：0 成功、1 校验错误、2 用法或 IO 错误。
+确定性事务。退出码：0 成功、1 校验/结构错误、2 用法或 IO/编码错误。
 """
 
 from __future__ import annotations
@@ -17,20 +17,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jy_roughcut  # noqa: E402
 
 
-def _load(path) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+class _StructureError(RuntimeError):
+    """输入 JSON 的顶层结构不对（不是对象）。"""
 
 
-def _out_from_plan(plan: dict, explicit: str | None) -> Path:
+def _load(path) -> object:
+    """读用户 JSON：兼容 Windows PowerShell 5.1 写出的 UTF-8 BOM。"""
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def _expect_dict(data: object, label: str) -> dict:
+    if not isinstance(data, dict):
+        raise _StructureError(f"{label} 必须是 JSON 对象，实际是 {type(data).__name__}")
+    return data
+
+
+def _out_from_plan(plan: dict, explicit: str | None, plan_path) -> Path:
     if explicit:
         return Path(explicit)
-    return Path(plan["source_root"]) / "roughcut"
+    root = plan.get("source_root")
+    if isinstance(root, str) and root.strip():
+        return Path(root) / "roughcut"
+    return Path(plan_path).resolve().parent
 
 
-def _out_from_grouping(grouping: dict, explicit: str | None) -> Path:
+def _out_from_grouping(grouping: dict, explicit: str | None, grouping_path) -> Path:
     if explicit:
         return Path(explicit)
-    return Path(grouping["root"]) / "roughcut"
+    root = grouping.get("root")
+    if isinstance(root, str) and root.strip():
+        return Path(root) / "roughcut"
+    return Path(grouping_path).resolve().parent
 
 
 def _print(data: dict) -> None:
@@ -38,8 +55,8 @@ def _print(data: dict) -> None:
 
 
 def _validated(scan: dict, grouping: dict, plan: dict) -> dict:
-    g = jy_roughcut.validate_grouping(grouping, scan)
-    p = jy_roughcut.validate_plan(plan, scan, grouping)
+    g = jy_roughcut.validate_grouping(grouping, scan, check_files=True)
+    p = jy_roughcut.validate_plan(plan, scan, grouping, check_files=True)
     return {
         "ok": g["ok"] and p["ok"],
         "errors": g["errors"] + p["errors"],
@@ -48,6 +65,13 @@ def _validated(scan: dict, grouping: dict, plan: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
     parser = argparse.ArgumentParser(description="AI 短剧智能粗剪")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -93,27 +117,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "frames":
-            grouping = _load(args.grouping)
-            out = _out_from_grouping(grouping, args.out)
-            scan = _load(out / "scan.json")
+            grouping = _expect_dict(_load(args.grouping), "grouping")
+            out = _out_from_grouping(grouping, args.out, args.grouping)
+            scan = _expect_dict(_load(out / "scan.json"), "scan")
             result = jy_roughcut.frames(grouping, scan, out, count=args.count)
             _print({"ok": True, **result})
             return 0
 
         if args.command == "validate":
-            plan = _load(args.plan)
-            grouping = _load(args.grouping)
-            out = _out_from_plan(plan, args.out)
-            scan = _load(out / "scan.json")
+            plan = _expect_dict(_load(args.plan), "plan")
+            grouping = _expect_dict(_load(args.grouping), "grouping")
+            out = _out_from_plan(plan, args.out, args.plan)
+            scan = _expect_dict(_load(out / "scan.json"), "scan")
             result = _validated(scan, grouping, plan)
             _print(result)
             return 0 if result["ok"] else 1
 
         if args.command == "build":
-            plan = _load(args.plan)
-            out = _out_from_plan(plan, args.out)
-            grouping = _load(args.grouping) if args.grouping else _load(out / "grouping.json")
-            scan = _load(out / "scan.json")
+            plan = _expect_dict(_load(args.plan), "plan")
+            out = _out_from_plan(plan, args.out, args.plan)
+            grouping = _expect_dict(
+                _load(args.grouping) if args.grouping else _load(out / "grouping.json"),
+                "grouping",
+            )
+            scan = _expect_dict(_load(out / "scan.json"), "scan")
             result = _validated(scan, grouping, plan)
             if not result["ok"]:
                 _print(result)
@@ -131,20 +158,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "report":
-            plan = _load(args.plan)
-            out = _out_from_plan(plan, args.out)
-            grouping = _load(args.grouping) if args.grouping else None
+            plan = _expect_dict(_load(args.plan), "plan")
+            out = _out_from_plan(plan, args.out, args.plan)
+            grouping = None
+            if args.grouping:
+                grouping = _expect_dict(_load(args.grouping), "grouping")
+            else:
+                default_grouping = out / "grouping.json"
+                if default_grouping.is_file():
+                    grouping = _expect_dict(_load(default_grouping), "grouping")
             text = jy_roughcut.report(plan, grouping)
             out.mkdir(parents=True, exist_ok=True)
             report_path = out / "roughcut.md"
             report_path.write_text(text, encoding="utf-8")
             _print({"ok": True, "report": str(report_path)})
             return 0
+    except _StructureError as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 1
     except (
-        FileNotFoundError,
-        KeyError,
+        OSError,
+        UnicodeError,
         json.JSONDecodeError,
         jy_roughcut.RoughcutError,
+        KeyError,
     ) as exc:
         print(f"[错误] {exc}", file=sys.stderr)
         return 2
