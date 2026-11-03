@@ -9,6 +9,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -138,6 +140,24 @@ class GroupingTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("a.mp4" in e for e in result["errors"]))
 
+    def test_whitelisted_media_reuse_is_allowed(self):
+        scan = make_scan("a.mp4", "b.mp4")
+        grouping = make_grouping(
+            shots=[
+                {"shot": "01", "takes": [{"take": "01", "kind": "single", "files": ["a.mp4"]}]},
+                {
+                    "shot": "02",
+                    "takes": [
+                        {"take": "01", "kind": "single", "files": ["a.mp4"]},
+                        {"take": "02", "kind": "single", "files": ["b.mp4"]},
+                    ],
+                },
+            ]
+        )
+        grouping["media_reuse"] = ["a.mp4"]
+        result = jy_roughcut.validate_grouping(grouping, scan)
+        self.assertTrue(result["ok"], result["errors"])
+
     def test_unknown_file_reference_is_an_error(self):
         scan = make_scan("a.mp4")
         grouping = make_grouping(
@@ -235,6 +255,52 @@ class GroupingTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_per_segment_mute_and_volume_are_validated(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        plan = make_plan([make_shot("01", ["a.mp4"])])
+        plan["shots"][0]["segments"][0]["mute"] = True
+        plan["shots"][0]["segments"][0]["volume"] = 0.4
+        self.assertTrue(jy_roughcut.validate_plan(plan, scan, grouping)["ok"])
+        plan["shots"][0]["segments"][0]["volume"] = -1
+        result = jy_roughcut.validate_plan(plan, scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("volume" in e for e in result["errors"]))
+
+    def test_audio_tracks_detect_overlap_on_the_same_track(self):
+        scan = make_scan("a.mp4")
+        grouping = grouping_for({"01": "a.mp4"})
+        plan = make_plan(
+            [make_shot("01", ["a.mp4"])],
+            extra={
+                "audio_tracks": [
+                    {"file": "v1.wav", "target_start": 0.0, "duration": 1.0, "track": "voice"},
+                    {"file": "v2.wav", "target_start": 0.5, "duration": 1.0, "track": "voice"},
+                ]
+            },
+        )
+        result = jy_roughcut.validate_plan(plan, scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("重叠" in e for e in result["errors"]))
+        plan["audio_tracks"][1]["track"] = "voice2"
+        self.assertTrue(jy_roughcut.validate_plan(plan, scan, grouping)["ok"])
+
+    def test_plan_media_reuse_requires_its_own_whitelist(self):
+        scan = make_scan("a.mp4")
+        grouping = make_grouping(
+            shots=[
+                {"shot": "01", "takes": [{"take": "01", "kind": "single", "files": ["a.mp4"]}]},
+                {"shot": "02", "takes": [{"take": "01", "kind": "single", "files": ["a.mp4"]}]},
+            ]
+        )
+        grouping["media_reuse"] = ["a.mp4"]
+        plan = make_plan([make_shot("01", ["a.mp4"]), make_shot("02", ["a.mp4"])])
+        result = jy_roughcut.validate_plan(plan, scan, grouping)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("media_reuse" in e for e in result["errors"]))
+        plan["media_reuse"] = ["a.mp4"]
+        self.assertTrue(jy_roughcut.validate_plan(plan, scan, grouping)["ok"])
+
     def test_interval_beyond_stream_duration_is_an_error(self):
         scan = make_scan("a.mp4")  # 视频流 2.0s
         grouping = grouping_for({"01": "a.mp4"})
@@ -463,6 +529,22 @@ class ShotlistTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def test_report_lists_audio_plan(self):
+        shot = make_shot("01", ["a.mp4"])
+        shot["segments"][0]["mute"] = True
+        plan = make_plan(
+            [shot],
+            extra={
+                "audio_tracks": [
+                    {"file": "voice.wav", "target_start": 0.5, "duration": 1.0, "track": "voice"}
+                ]
+            },
+        )
+        text = jy_roughcut.report(plan)
+        self.assertIn("音频处理", text)
+        self.assertIn("静音", text)
+        self.assertIn("voice.wav", text)
+
     def test_report_lists_unresolved_and_low_confidence(self):
         grouping = grouping_for(
             {"07": "a.mp4"},
@@ -602,6 +684,173 @@ class FramesTests(unittest.TestCase):
             self.assertTrue(Path(result["sheets"][0]).name.startswith("shot-01-1"))
 
 
+class TranscribeTests(unittest.TestCase):
+    def test_transcribe_media_uses_decoded_pcm_and_reports_utterances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import numpy as np
+
+            media = Path(tmp) / "a.mp4"
+            media.write_bytes(b"x")
+            pcm = np.zeros(16000, dtype=np.int16).tobytes()
+
+            class Engine:
+                def __init__(self):
+                    self.audio = None
+                    self.kwargs = None
+
+                def transcribe(self, audio, **kwargs):
+                    self.audio = audio
+                    self.kwargs = kwargs
+                    return (
+                        [SimpleNamespace(start=0.5, end=1.2, text=" 你好 ")],
+                        SimpleNamespace(language="zh"),
+                    )
+
+            engine = Engine()
+            result = jy_roughcut.transcribe_media(
+                media,
+                model="tiny",
+                language="zh",
+                vad=False,
+                decode=lambda path: pcm,
+                engine_factory=lambda: engine,
+            )
+            self.assertEqual(result["language"], "zh")
+            self.assertEqual(result["utterances"][0]["text"], "你好")
+            self.assertEqual(result["utterances"][0]["start"], 0.5)
+            self.assertEqual(engine.kwargs["language"], "zh")
+            self.assertFalse(engine.kwargs["vad_filter"])
+            self.assertEqual(engine.audio.dtype.name, "float32")
+
+    def test_missing_media_is_rejected_before_loading_a_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                jy_roughcut.transcribe_media(
+                    Path(tmp) / "nope.mp4",
+                    decode=lambda path: b"",
+                    engine_factory=lambda: None,
+                )
+
+    def test_transcribe_splits_words_into_utterances_on_spaces_and_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import numpy as np
+
+            media = Path(tmp) / "a.mp4"
+            media.write_bytes(b"x")
+            pcm = np.zeros(32000, dtype=np.int16).tobytes()
+            words = [
+                SimpleNamespace(start=0.0, end=0.5, word="甲"),
+                SimpleNamespace(start=0.5, end=1.0, word="乙"),
+                SimpleNamespace(start=1.4, end=1.8, word=" 丙"),
+            ]
+            segment = SimpleNamespace(start=0.0, end=1.8, text="甲乙 丙", words=words)
+
+            class Engine:
+                def transcribe(self, audio, **kwargs):
+                    return [segment], SimpleNamespace(language="zh")
+
+            result = jy_roughcut.transcribe_media(
+                media,
+                decode=lambda path: pcm,
+                engine_factory=lambda: Engine(),
+            )
+            self.assertEqual(
+                result["utterances"],
+                [
+                    {"start": 0.0, "end": 1.0, "text": "甲乙"},
+                    {"start": 1.4, "end": 1.8, "text": "丙"},
+                ],
+            )
+
+
+class AuditTests(unittest.TestCase):
+    def _timeline(self, *, first_source_start=0.0, second_volume=0.0):
+        return {
+            "draft": "第3集-粗剪",
+            "tracks": {
+                "main_video": {
+                    "type": "video",
+                    "segments": [
+                        {
+                            "index": 0,
+                            "source_start": first_source_start,
+                            "source_duration": 2.0,
+                            "target_start": 0.0,
+                            "target_duration": 2.0,
+                            "volume": 1.0,
+                        },
+                        {
+                            "index": 1,
+                            "source_start": 0.0,
+                            "source_duration": 2.0,
+                            "target_start": 2.0,
+                            "target_duration": 2.0,
+                            "volume": second_volume,
+                        },
+                    ],
+                },
+                "separated_audio": {
+                    "type": "audio",
+                    "segments": [
+                        {
+                            "index": 0,
+                            "source_start": 0.0,
+                            "source_duration": 2.0,
+                            "target_start": 2.0,
+                            "target_duration": 2.0,
+                            "volume": 1.0,
+                        }
+                    ],
+                },
+            },
+        }
+
+    def test_audit_maps_dialogue_to_shots_and_marks_cut_audio(self):
+        plan = make_plan([make_shot("01", ["a.mp4"]), make_shot("02", ["b.mp4"])])
+        transcript = {
+            "file": "a.mp4",
+            "language": "zh",
+            "utterances": [
+                {"start": 0.5, "end": 1.0, "text": "甲"},
+                {"start": 2.5, "end": 3.0, "text": "被剪掉的乙"},
+            ],
+        }
+        result = jy_roughcut.audit_plan(plan, self._timeline(), [transcript], fps=30)
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(result["dialogue"][0]["shot"], "01")
+        self.assertAlmostEqual(result["dialogue"][0]["timeline_start"], 0.5)
+        self.assertEqual(result["dialogue"][1]["status"], "cut_out")
+        self.assertEqual(result["silence"][0]["start"], 2.0)
+        self.assertEqual(result["audio_tracks"][0]["track"], "separated_audio")
+
+    def test_audit_reports_plan_drift_beyond_one_frame(self):
+        plan = make_plan([make_shot("01", ["a.mp4"]), make_shot("02", ["b.mp4"])])
+        result = jy_roughcut.audit_plan(plan, self._timeline(first_source_start=0.3), fps=24)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("source_start" in error for error in result["errors"]))
+
+    def test_audit_accepts_one_frame_rounding(self):
+        plan = make_plan([make_shot("01", ["a.mp4"]), make_shot("02", ["b.mp4"])])
+        result = jy_roughcut.audit_plan(plan, self._timeline(first_source_start=0.0333), fps=30)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_audit_counts_an_utterance_trimmed_by_the_in_point(self):
+        shot = make_shot("01", ["a.mp4"])
+        shot["segments"][0]["source_start"] = 0.5
+        shot["segments"][0]["duration"] = 1.5
+        plan = make_plan([shot])
+        transcript = {
+            "file": "a.mp4",
+            "utterances": [{"start": 0.4, "end": 1.0, "text": "跨入点的一句"}],
+        }
+        result = jy_roughcut.audit_plan(plan, self._timeline(), [transcript], fps=30)
+        entry = result["dialogue"][0]
+        self.assertEqual(entry["status"], "in_timeline")
+        self.assertTrue(entry["trimmed"])
+        self.assertAlmostEqual(entry["timeline_start"], 0.0)
+        self.assertAlmostEqual(entry["timeline_end"], 0.5)
+
+
 class BuildTests(unittest.TestCase):
     def test_build_refuses_incomplete_grouping(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -708,6 +957,49 @@ class BuildTests(unittest.TestCase):
             edit = next(args for args in calls if args and args[0] == "edit-segment")
             self.assertIn("--mute", edit)
 
+    def test_build_applies_per_segment_mute_volume_and_audio_tracks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "第3集"
+            source.mkdir()
+            (source / "a.mp4").write_bytes(b"x")
+            (source / "voice.wav").write_bytes(b"x")
+            out = source / "roughcut"
+            scan = make_scan("a.mp4", root=str(source))
+            grouping = grouping_for({"01": "a.mp4"})
+            grouping["root"] = str(source)
+            plan = make_plan(
+                [make_shot("01", ["a.mp4"])],
+                source_root=str(source),
+                extra={
+                    "audio_tracks": [
+                        {
+                            "file": "voice.wav",
+                            "target_start": 0.5,
+                            "source_start": 0.0,
+                            "duration": 1.0,
+                            "track": "voice",
+                        }
+                    ]
+                },
+            )
+            plan["shots"][0]["segments"][0]["mute"] = True
+            plan["shots"][0]["segments"][0]["volume"] = 0.4
+            calls: list[list[str]] = []
+            result = jy_roughcut.build(
+                plan, scan, grouping, out,
+                run_builder=lambda args: {},
+                run_transition=lambda args: calls.append(list(args)) or {},
+            )
+            edit = next(args for args in calls if args and args[0] == "edit-segment")
+            self.assertIn("--mute", edit)
+            self.assertEqual(edit[edit.index("--volume") + 1], "0.4")
+            audio = next(args for args in calls if args and args[0] == "append-audio")
+            self.assertEqual(
+                audio[audio.index("--audio") + 1], str((source / "voice.wav").resolve())
+            )
+            self.assertEqual(audio[audio.index("--target-start") + 1], "0.5")
+            self.assertEqual(result["audio_tracks_applied"], 1)
+
     def test_build_refuses_missing_media_before_writing(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "roughcut"
@@ -750,6 +1042,29 @@ class BuildTests(unittest.TestCase):
                     existing=True,
                     check_files=False,
                     draft_exists=lambda name: False,
+                    run_builder=lambda args: {},
+                    run_transition=lambda args: {},
+                )
+            self.assertFalse(out.exists())
+
+    def test_build_existing_refuses_a_non_empty_draft_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            plan = make_plan([make_shot("01", ["a.mp4"])])
+            with self.assertRaisesRegex(jy_roughcut.RoughcutError, "非空"):
+                jy_roughcut.build(
+                    plan, scan, grouping, out,
+                    existing=True,
+                    check_files=False,
+                    draft_exists=lambda name: True,
+                    draft_status=lambda name: {
+                        "exists": True,
+                        "video_segments": 3,
+                        "host_running": False,
+                        "managed": True,
+                    },
                     run_builder=lambda args: {},
                     run_transition=lambda args: {},
                 )
@@ -888,6 +1203,35 @@ class CliTests(unittest.TestCase):
             self.assertIn("b.mp4", text)
             self.assertIn("叠化建议未执行", text)
             self.assertIn("未对剧本验证", text)
+
+    def test_cli_frames_finds_scan_next_to_grouping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "第3集"
+            source.mkdir()
+            out = source / "roughcut"
+            out.mkdir()
+            (out / "scan.json").write_text(
+                json.dumps(make_scan("a.mp4", root=str(source)), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            grouping = grouping_for({"01": "a.mp4"})
+            grouping_path = out / "grouping.json"
+            grouping_path.write_text(json.dumps(grouping, ensure_ascii=False), encoding="utf-8")
+            target = source / "dense"
+
+            sys.path.insert(0, str(ROOT / "tools"))
+            import roughcut as roughcut_cli
+
+            with mock.patch.object(
+                jy_roughcut, "frames", return_value={"sheets": [], "shots": 0, "cells": []}
+            ) as frames:
+                rc = roughcut_cli.main(
+                    ["frames", "--grouping", str(grouping_path), "--out", str(target), "--count", "3"]
+                )
+            self.assertEqual(rc, 0)
+            frames.assert_called_once()
+            passed_scan = frames.call_args.args[1]
+            self.assertEqual(passed_scan["clips"][0]["file"], "a.mp4")
 
 
 class McpTests(unittest.TestCase):

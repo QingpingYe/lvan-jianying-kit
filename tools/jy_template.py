@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -91,7 +93,245 @@ def apply_jianying_env(start: Path | None = None) -> dict[str, str]:
         for key, value in applied.items():
             os.environ.setdefault(key, value)
         return applied
+
+    # 插件模式把路径信息写在 runtime.json 的 jianying_paths 里；老版本
+    # 安装器写的是独立的 jianying-paths.json，两者都要认。
+    for path in _runtime_json_candidates(here):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        nested = data.get("jianying_paths") if isinstance(data, dict) else None
+        if not isinstance(nested, dict):
+            continue
+        applied = {
+            str(key): str(value)
+            for key, value in nested.items()
+            if isinstance(value, str) and value
+        }
+        for key, value in applied.items():
+            os.environ.setdefault(key, value)
+        if applied:
+            return applied
     return {}
+
+
+def _runtime_json_candidates(here: Path | None = None) -> list[Path]:
+    """runtime.json 的查找顺序：JIANYING_KIT_HOME → 用户目录 → 插件目录。"""
+    here = here or Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    kit_home = os.environ.get("JIANYING_KIT_HOME")
+    if kit_home:
+        candidates.append(Path(kit_home) / "runtime.json")
+    try:
+        candidates.append(Path.home() / ".jianying-kit" / "runtime.json")
+    except RuntimeError:
+        pass
+    candidates += [here.parent / "runtime.json", here / "runtime.json"]
+    # 去重但保持顺序
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+# 插件模式下任何 import jy_template 的入口都自动注入路径，避免各脚本漏调用。
+# setdefault 语义保证用户显式设置的环境变量优先。
+apply_jianying_env()
+
+
+def jianying_process_ids() -> list[int]:
+    """当前运行的剪映进程号；探测不到时返回空列表。"""
+    try:
+        if os.name == "nt":
+            proc = subprocess.run(
+                [
+                    "tasklist",
+                    "/FI",
+                    "IMAGENAME eq JianyingPro.exe",
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            ids: list[int] = []
+            for line in (proc.stdout or "").splitlines():
+                parts = [part.strip().strip('"') for part in line.split('","')]
+                if len(parts) >= 2 and parts[0].casefold() == "jianyingpro.exe":
+                    try:
+                        ids.append(int(parts[1]))
+                    except ValueError:
+                        continue
+            return ids
+        proc = subprocess.run(
+            ["pgrep", "-x", "VideoFusion-macOS|JianyingPro"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return [int(line) for line in (proc.stdout or "").split() if line.strip().isdigit()]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def draft_status(
+    root: str | Path | None,
+    name: str,
+    *,
+    process_ids: Any = None,
+) -> dict[str, Any]:
+    """草稿当前的占用与内容概况，用来判断写盘是否安全。"""
+    resolved = resolve_root(root)
+    project = resolved / name
+    status: dict[str, Any] = {
+        "draft": name,
+        "path": str(project),
+        "exists": project.is_dir(),
+        "readable": False,
+        "managed": False,
+        "host_running": False,
+        "video_segments": None,
+        "audio_segments": None,
+    }
+    probe = process_ids or jianying_process_ids
+    try:
+        status["host_running"] = bool(probe())
+    except Exception:  # noqa: BLE001 - 探测失败不能阻断读写
+        status["host_running"] = False
+    if not status["exists"]:
+        return status
+    markers = ("Timelines", "agent", "deepagent", "Resources", "matting", "smart_crop", "subdraft")
+    status["managed"] = any((project / marker).exists() for marker in markers)
+    try:
+        content, _ = read_draft(resolved, name)
+    except Exception:  # noqa: BLE001 - 密文不可读时只报告不可读
+        return status
+    status["readable"] = True
+    video = 0
+    audio = 0
+    for track in content.get("tracks", []):
+        segments = track.get("segments") or []
+        if track.get("type") == "video":
+            video += len(segments)
+        elif track.get("type") == "audio":
+            audio += len(segments)
+    status["video_segments"] = video
+    status["audio_segments"] = audio
+    return status
+
+
+def assert_draft_writable(
+    root: str | Path | None,
+    name: str,
+    *,
+    force: bool = False,
+    process_ids: Any = None,
+) -> dict[str, Any]:
+    """写前守卫：剪映开着且目标草稿非空时拒绝写入。"""
+    status = draft_status(root, name, process_ids=process_ids)
+    if force or not status["host_running"]:
+        return status
+    video = status.get("video_segments") or 0
+    audio = status.get("audio_segments") or 0
+    risky = bool(video or audio) or (status.get("managed") and not status.get("readable"))
+    if risky:
+        raise TemplateError(
+            "剪映正在运行，且目标草稿 "
+            f"{name} 已有 {video} 个视频片段 / {audio} 个音频片段。"
+            "剪映内存里的版本可能覆盖本次写入：请先在剪映中退出该草稿（或完全退出剪映）后重试，"
+            "确认风险后也可加 --force。"
+        )
+    return status
+
+
+def _us_to_seconds(value: Any) -> float:
+    try:
+        return round(int(value or 0) / SEC, 6)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def timeline_summary(root: str | Path | None, name: str) -> dict[str, Any]:
+    """把草稿时间线摊平成秒单位的摘要，供写后核对与 audit 使用。"""
+    resolved = resolve_root(root)
+    content, _ = read_draft(resolved, name)
+    tracks: dict[str, Any] = {}
+    for track in content.get("tracks", []):
+        track_name = str(track.get("name") or "")
+        segments = []
+        for index, segment in enumerate(track.get("segments") or []):
+            source = segment.get("source_timerange") or {}
+            target = segment.get("target_timerange") or {}
+            segments.append(
+                {
+                    "index": index,
+                    "source_start": _us_to_seconds(source.get("start", 0)),
+                    "source_duration": _us_to_seconds(source.get("duration", 0)),
+                    "target_start": _us_to_seconds(target.get("start", 0)),
+                    "target_duration": _us_to_seconds(target.get("duration", 0)),
+                    "volume": segment.get("volume"),
+                    "visible": segment.get("visible"),
+                }
+            )
+        tracks[track_name] = {"type": track.get("type"), "segments": segments}
+    return {
+        "draft": name,
+        "duration": _us_to_seconds(content.get("duration", 0)),
+        "tracks": tracks,
+    }
+
+
+def verify_timeline(
+    root: str | Path | None,
+    name: str,
+    expected: list[dict[str, Any]],
+    *,
+    track: str = "main_video",
+    fps: float = 30.0,
+    tolerance_frames: float = 1.0,
+) -> dict[str, Any]:
+    """写后核对：草稿里的段数与关键时间点是否与计划一致（默认 ±1 帧）。"""
+    summary = timeline_summary(root, name)
+    actual = ((summary.get("tracks") or {}).get(track) or {}).get("segments") or []
+    tolerance = max(1e-6, float(tolerance_frames) / max(float(fps), 1e-9))
+    errors: list[str] = []
+    if len(actual) != len(expected):
+        errors.append(f"{track} 段数不一致：计划 {len(expected)}，草稿 {len(actual)}")
+    for index, (planned, written) in enumerate(zip(expected, actual)):
+        checks = (
+            ("source_start", "source_start"),
+            ("duration", "source_duration"),
+            ("target_start", "target_start"),
+        )
+        for plan_key, actual_key in checks:
+            if plan_key not in planned or planned[plan_key] is None:
+                continue
+            delta = abs(float(planned[plan_key]) - float(written.get(actual_key) or 0.0))
+            # 每段时长各自取整到帧，后面段的起点会累积偏移，因此目标起点
+            # 的容差按段号放宽（第 n 段最多容忍 n 帧的累计误差）。
+            check_tolerance = tolerance if plan_key != "target_start" else tolerance * (index + 1)
+            if delta > check_tolerance:
+                errors.append(
+                    f"{track} 段{index} {plan_key} 不一致："
+                    f"计划 {float(planned[plan_key]):.3f}s，草稿 {float(written.get(actual_key) or 0.0):.3f}s"
+                    f"（差 {delta:.3f}s，容差 {check_tolerance:.3f}s）"
+                )
+    return {
+        "ok": not errors,
+        "track": track,
+        "tolerance": round(tolerance, 6),
+        "actual": actual,
+        "errors": errors,
+    }
 
 
 def _project(root: Path, name: str) -> Path:

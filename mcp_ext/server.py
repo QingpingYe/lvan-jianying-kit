@@ -94,15 +94,20 @@ def build_roughcut_draft(
     draft_name: str | None = None,
     existing: bool = False,
     out: str | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """按决策表建剪映草稿（含叠化与静音），返回 build 报告。"""
+    """按决策表建剪映草稿（含叠化与静音），返回 build 报告。
+
+    ``existing`` 只保证在空草稿上正确追加；``force`` 才会跳过剪映占用/非空保护。
+    """
     plan_file = Path(plan_path).expanduser()
     plan = _read_json(plan_file)
     out_dir = Path(out).expanduser() if out else plan_file.parent
     grouping = _read_json(out_dir / "grouping.json")
     scan = _read_json(out_dir / "scan.json")
     return jy_roughcut.build(
-        plan, scan, grouping, out_dir, draft_name=draft_name, existing=existing
+        plan, scan, grouping, out_dir,
+        draft_name=draft_name, existing=existing, force=force,
     )
 
 

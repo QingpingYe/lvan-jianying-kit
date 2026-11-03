@@ -98,10 +98,13 @@
 
 ## 9. 声音与字幕（标注层）
 
-- 原素材音轨默认保留；需要静音时在 plan 声明；
-- 对白/旁白走 voiceover 链路；
-- 字幕时间轴与切点对齐，不与切点冲突；
+- 原素材音轨默认保留；需要整片静音用顶层 `source_audio: "mute"`，需要逐段处理用 `segments[].mute` / `segments[].volume`，都要先过校验器再建草稿。
+- 有对白/旁白的素材默认做一次音频核验：`transcribe` 出文本与时间戳，对照剧本和画面主体检查五点——台词缺失、与画面不符、同句重复、镜内顺序颠倒、旁白落在错镜头；结论写进对应 `review`。
+- 声音与画面错位时优先用 `audio_tracks` 做分离音轨对位：`file` + `source_start` + `target_start` + `duration`，同一轨道内不得重叠；J-cut 前移 0.2 至 0.5 秒，符合 §6。
+- 不允许把音画修复只写进 `audio_repair` 之类的自由文本；重建时必须能从 plan 复现。
+- 对白/旁白走 voiceover 链路；字幕时间轴与切点对齐，不与切点冲突；
 - 音效与音乐只给建议（v0.1 不自动执行）。
+- 建完草稿后跑 `audit`：逐句核对「台词 → 镜头 → 时间线」、静音区间与分离音轨；audit 不通过不得交付。
 
 ## 10. 输出与自检
 
@@ -146,6 +149,11 @@ edit plan 每镜必填：`segments`、`reason`、`confidence`、`alternates`、`
 | 转场规则 | `transition_out.type/duration`；执行层仅 `hard_cut`/`dissolve` |
 | 覆盖/低置信 | validate 强制检查；`review` 清单 |
 | 结构/节奏 | 镜头顺序与 `warnings`；自检清单 |
+| 音频核验 | `transcribe` → 文本/时间戳对照画面；结论进 `review` |
+| 静音/音量 | `source_audio` 或 `segments[].mute` / `segments[].volume`；validate 校验 |
+| 音轨对位 | `audio_tracks`（同轨不重叠）；build 逐条落位 |
+| 素材复用 | `grouping.media_reuse` + `plan.media_reuse` 双白名单 |
+| 写后验收 | `manifest.json` + 写后时间线核对；`audit` 音画对位报告 |
 
 ## 13. 参考来源
 

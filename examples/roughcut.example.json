@@ -18,7 +18,7 @@
     {
       "shot": "06",
       "script_ref": "第6镜：她伸手拿起信，时间跳到当晚",
-      "segments": [{ "file": "03-06-01.mp4", "source_start": 0.2, "duration": 2.2 }],
+      "segments": [{ "file": "03-06-01.mp4", "source_start": 0.2, "duration": 2.2, "volume": 0.6 }],
       "reason": "take01 动作完整、情绪到位；take02 起幅抖动 0.4 秒",
       "confidence": 0.8,
       "alternates": [{ "file": "03-06-02.mp4", "note": "起幅抖动 0.4 秒" }],
@@ -26,6 +26,10 @@
       "effects": [],
       "review": []
     }
+  ],
+  "media_reuse": [],
+  "audio_tracks": [
+    { "file": "letter_voice.wav", "source_start": 0.0, "target_start": 4.7, "duration": 0.5, "track": "voice" }
   ],
   "warnings": []
 }

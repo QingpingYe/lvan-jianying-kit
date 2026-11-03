@@ -22,25 +22,97 @@ import time
 from pathlib import Path
 
 
-def venv_python() -> Path:
-    """优先找工具包根目录下的 .venv，其次找脚本同级目录。"""
+def _runtime_json_candidates(
+    *,
+    env: dict[str, str] | None = None,
+    home: Path | None = None,
+    plugin_root: Path | None = None,
+) -> list[Path]:
+    """runtime.json 的查找顺序：JIANYING_KIT_HOME → 用户目录 → 插件目录。"""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
     here = Path(__file__).resolve().parent
-    for base in (here.parent, here):
-        candidate = base / ".venv" / "Scripts" / "python.exe"
-        if candidate.is_file():
-            return candidate
-    return here.parent / ".venv" / "Scripts" / "python.exe"
+    root = Path(plugin_root) if plugin_root is not None else here.parent
+    candidates: list[Path] = []
+    kit_home = env.get("JIANYING_KIT_HOME")
+    if kit_home:
+        candidates.append(Path(kit_home) / "runtime.json")
+    try:
+        candidates.append(home / ".jianying-kit" / "runtime.json")
+    except RuntimeError:
+        pass
+    candidates += [root / "runtime.json", here / "runtime.json"]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
-def load_jianying_env() -> dict[str, str]:
+def venv_python(
+    explicit: str | Path | None = None,
+    *,
+    plugin_root: Path | None = None,
+    home: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Path | None:
+    """解析运行 jianying-tool 的 Python。
+
+    顺序：显式 --python → runtime.json 里的运行时（插件模式的正确位置）→
+    插件根/.venv。找不到时返回 None，由调用方给出可执行的修复提示，绝不返回
+    一个看起来像路径但不存在的 exe。
+    """
+    if explicit:
+        return Path(explicit)
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
+    for path in _runtime_json_candidates(env=env, home=home, plugin_root=plugin_root):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        python = data.get("python") if isinstance(data, dict) else None
+        if isinstance(python, str) and python.strip() and Path(python).is_file():
+            return Path(python)
+    here = Path(__file__).resolve().parent
+    bases = [Path(plugin_root)] if plugin_root is not None else [here.parent]
+    bases.append(here)
+    for base in bases:
+        for parts in (("Scripts", "python.exe"), ("bin", "python3"), ("bin", "python")):
+            candidate = base.joinpath(".venv", *parts)
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def load_jianying_env(
+    *,
+    env: dict[str, str] | None = None,
+    home: Path | None = None,
+    plugin_root: Path | None = None,
+) -> dict[str, str]:
     """读取安装器写入的 jianying-paths.json。
 
     剪映装在非默认位置（或草稿目录被改过）时，安装器会把实际路径记录在这里，
     这里注入给 jianying-tool 子进程，避免它去找默认路径。
+
+    兼容两种布局：老安装器写的独立 ``jianying-paths.json``，以及插件模式
+    ``runtime.json`` 里的 ``jianying_paths`` 块。
     """
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
     here = Path(__file__).resolve().parent
-    for base in (here.parent, here):
-        path = base / "jianying-paths.json"
+    root = Path(plugin_root) if plugin_root is not None else here.parent
+    flat_candidates: list[Path] = []
+    kit_home = env.get("JIANYING_KIT_HOME")
+    if kit_home:
+        flat_candidates.append(Path(kit_home) / "jianying-paths.json")
+    flat_candidates.append(home / ".jianying-kit" / "jianying-paths.json")
+    flat_candidates += [root / "jianying-paths.json", here / "jianying-paths.json"]
+    for path in flat_candidates:
         if not path.is_file():
             continue
         try:
@@ -48,6 +120,14 @@ def load_jianying_env() -> dict[str, str]:
         except (OSError, json.JSONDecodeError):
             return {}
         return {k: str(v) for k, v in data.items() if isinstance(v, str) and v}
+    for path in _runtime_json_candidates(env=env, home=home, plugin_root=plugin_root):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        nested = data.get("jianying_paths") if isinstance(data, dict) else None
+        if isinstance(nested, dict):
+            return {k: str(v) for k, v in nested.items() if isinstance(v, str) and v}
     return {}
 
 
@@ -68,7 +148,7 @@ class Builder:
             cmd += ["--root", self.root]
         printable = " ".join(f'"{a}"' if " " in a else a for a in cmd[3:])
         if self.dry_run:
-            print(f"[dry-run] {printable}")
+            print(f"[dry-run] [cmd] {printable}")
             return {}
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
         for key, value in load_jianying_env().items():
@@ -79,9 +159,10 @@ class Builder:
         )
         if proc.returncode != 0:
             raise SystemExit(
-                f"命令失败（exit {proc.returncode}）：{printable}\n{proc.stdout}\n{proc.stderr}"
+                f"命令失败（exit {proc.returncode}）：[cmd] {printable}\n"
+                f"[stdout]\n{proc.stdout}\n[stderr]\n{proc.stderr}"
             )
-        print(f"[ok] {printable}")
+        print(f"[ok] [cmd] {printable}")
         out = (proc.stdout or "").strip()
         try:
             return json.loads(out) if out.startswith("{") else {}
@@ -157,7 +238,23 @@ def project_duration_seconds(draft_dir: Path | None) -> float | None:
     return end_us / 1e6 if end_us else None
 
 
-def main() -> None:
+def existing_video_segment_count(draft_dir: Path, track: str = "main_video") -> int | None:
+    """读已有草稿指定视频轨的片段数；读不到时返回 None（交给后续流程报错）。"""
+    try:
+        import jy_template
+    except ImportError:
+        return None
+    try:
+        content, _ = jy_template.read_draft(draft_dir.parent, draft_dir.name)
+    except Exception:  # noqa: BLE001 - 明文/密文都可能读失败，读失败不在这里下结论
+        return None
+    for item in content.get("tracks", []):
+        if item.get("name") == track or (track == "main_video" and item.get("type") == "video"):
+            return len(item.get("segments") or [])
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -170,7 +267,17 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="只打印将要执行的命令")
     ap.add_argument("--existing", action="store_true",
                     help="目标草稿已存在（例如先在剪映里建好空草稿），跳过创建、直接填入内容")
-    args = ap.parse_args()
+    ap.add_argument("--force", action="store_true",
+                    help="跳过剪映占用/非空草稿保护；确认风险后才使用")
+    args = ap.parse_args(argv)
+
+    python_exe = venv_python(args.python)
+    if python_exe is None:
+        raise SystemExit(
+            "找不到可用的 Python 环境：请先运行 install.ps1 完成运行时安装"
+            "（路径会写入 %USERPROFILE%\\.jianying-kit\\runtime.json），"
+            "或用 --python 指定安装了 jianying-tool 的 python.exe。"
+        )
 
     shotlist_path = Path(args.shotlist).resolve()
     base = shotlist_path.parent
@@ -186,7 +293,7 @@ def main() -> None:
         raise SystemExit("分镜表里没有任何镜头")
     video_track = spec.get("video_track", "main_video")
 
-    b = Builder(Path(args.python) if args.python else venv_python(), args.root, args.dry_run)
+    b = Builder(python_exe, args.root, args.dry_run)
 
     info = {} if args.dry_run else b.run("probe", "--json", raw=True)
     draft_root = Path(args.root) if args.root else (
@@ -200,6 +307,24 @@ def main() -> None:
             raise SystemExit(
                 f"草稿已存在：{target}\n换个 draft_name，或加 --existing 往这个草稿里填内容"
             )
+        if args.existing:
+            count = existing_video_segment_count(target, video_track)
+            if count and count > 0 and not args.force:
+                raise SystemExit(
+                    f"目标草稿非空：--existing 草稿的 {video_track} 轨道已有 {count} 个视频片段。\n"
+                    "本模式只保证在空草稿上正确追加；请换新草稿名，"
+                    "确认要叠加内容时再加 --force。"
+                )
+            try:
+                import jy_template
+
+                jy_template.assert_draft_writable(
+                    draft_root, name, force=args.force
+                )
+            except ImportError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - 统一转成面向用户的错误
+                raise SystemExit(f"写前检查未通过：{exc}") from exc
 
     missing = [s["file"] for s in shots if not Path(resolve(base, s["file"])).exists()]
     for extra in filter(None, [spec.get("bgm", {}).get("file"), spec.get("subtitles", {}).get("srt")]):
@@ -223,6 +348,14 @@ def main() -> None:
             cmd += ["--duration", str(first["duration"])]
         cmd += ["--width", str(width), "--height", str(height)]
         b.run(*cmd)
+        if first.get("source_start") is not None and float(first["source_start"]) != 0:
+            b.run(
+                "edit-segment",
+                "--draft", name,
+                "--track", first.get("track", video_track),
+                "--segment", "0",
+                "--source-start", str(first["source_start"]),
+            )
         cursor, pending = float(first.get("duration") or 0), rest
 
     for shot in pending:
@@ -292,13 +425,50 @@ def main() -> None:
         b.run(*cmd)
 
     draft_dir = (draft_root / name) if draft_root else None
+    verification: dict = {}
     if draft_dir and draft_dir.exists() and not args.dry_run:
         sync_card_meta(draft_dir)
+        expected = [
+            {
+                "source_start": float(shot.get("source_start", 0.0)),
+                "duration": float(shot["duration"]),
+                "target_start": shot.get("target_start"),
+            }
+            for shot in shots
+            if shot.get("duration") is not None
+        ]
+        try:
+            import jy_template
+
+            verification = jy_template.verify_timeline(
+                draft_dir.parent, name, expected, track=video_track, fps=fps
+            )
+        except Exception as exc:  # noqa: BLE001 - 核对失败要明确报错，不能静默通过
+            verification = {"ok": False, "errors": [f"写后核对无法执行：{exc}"]}
+        if not verification.get("ok"):
+            detail = "\n  ".join(verification.get("errors") or ["草稿时间线与计划不一致"])
+            raise SystemExit(
+                "写后核对失败，草稿可能被剪映覆盖或写入不完整：\n  "
+                + detail
+                + "\n请完全退出剪映后重建；若确认草稿已被外部修改，请先另存新草稿名。"
+            )
+        try:
+            import jy_template
+
+            if jy_template.jianying_process_ids():
+                print("[warn] 剪映正在运行：新草稿可能不会立刻出现在草稿列表里，必要时重启剪映刷新。")
+        except Exception:  # noqa: BLE001 - 提示失败不影响交付
+            pass
 
     result = b.run("doctor", str(draft_dir) if draft_dir else name, raw=True)
-    print(json.dumps({"draft": name, "doctor": result}, ensure_ascii=False, indent=2))
+    print(json.dumps(
+        {"draft": name, "doctor": result, "verification": verification},
+        ensure_ascii=False,
+        indent=2,
+    ))
     if not args.dry_run:
         print(f"\n草稿已生成：{name}（在剪映草稿首页查看，可能需要重启剪映刷新列表）")
+    return 0
 
 
 if __name__ == "__main__":

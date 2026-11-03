@@ -116,6 +116,92 @@ def make_ambiguous_text_tracks_draft(root: Path, name: str = "模板") -> Path:
 
 
 class DuplicateTests(unittest.TestCase):
+    def test_apply_jianying_env_reads_runtime_json_nested_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            kit_home = home / ".jianying-kit"
+            kit_home.mkdir(parents=True)
+            (kit_home / "runtime.json").write_text(
+                json.dumps({"jianying_paths": {"JY_TEST_MARKER": "yes"}}),
+                encoding="utf-8",
+            )
+            with mock.patch("pathlib.Path.home", return_value=home), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                applied = jy_template.apply_jianying_env(start=Path(tmp))
+                self.assertEqual(applied.get("JY_TEST_MARKER"), "yes")
+                self.assertEqual(os.environ.get("JY_TEST_MARKER"), "yes")
+
+    def test_draft_status_reports_non_empty_managed_and_host_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            draft_dir = make_template_draft(root, "模板")
+            (draft_dir / "Timelines" / "timeline-1").mkdir(parents=True)
+            status = jy_template.draft_status(root, "模板", process_ids=lambda: [42])
+            self.assertTrue(status["exists"])
+            self.assertEqual(status["video_segments"], 1)
+            self.assertTrue(status["managed"])
+            self.assertTrue(status["host_running"])
+
+    def test_assert_draft_writable_refuses_when_jianying_is_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            with self.assertRaisesRegex(jy_template.TemplateError, "剪映"):
+                jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [42])
+            jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [42], force=True)
+            jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [])
+
+    def test_assert_draft_writable_allows_an_empty_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板", texts=())
+            content_path = root / "模板" / "draft_content.json"
+            content = json.loads(content_path.read_text(encoding="utf-8"))
+            for track in content["tracks"]:
+                if track.get("name") == "main_video":
+                    track["segments"] = []
+            content_path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+            status = jy_template.draft_status(root, "模板", process_ids=lambda: [42])
+            self.assertEqual(status["video_segments"], 0)
+            jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [42])
+
+    def test_verify_timeline_accepts_one_frame_rounding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板", duration_us=2_000_000)
+            result = jy_template.verify_timeline(
+                root,
+                "模板",
+                [{"source_start": 0.0333, "duration": 2.0, "target_start": 0.0}],
+                fps=30,
+            )
+            self.assertTrue(result["ok"], result["errors"])
+
+    def test_verify_timeline_reports_a_real_source_start_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板", duration_us=2_000_000)
+            result = jy_template.verify_timeline(
+                root,
+                "模板",
+                [{"source_start": 0.3, "duration": 2.0, "target_start": 0.0}],
+                fps=24,
+            )
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("source_start" in error for error in result["errors"]))
+
+    def test_verify_timeline_matches_a_matching_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板", duration_us=2_000_000)
+            result = jy_template.verify_timeline(
+                root,
+                "模板",
+                [{"source_start": 0.0, "duration": 2.0, "target_start": 0.0}],
+                fps=30,
+            )
+            self.assertTrue(result["ok"], result["errors"])
+
     def test_duplicate_gives_the_copy_its_own_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

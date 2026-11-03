@@ -20,6 +20,7 @@
   powershell -ExecutionPolicy Bypass -File install.ps1 -Portable    # 强制用工具包内可移植 Python
   powershell -ExecutionPolicy Bypass -File install.ps1 -PathsOnly   # 只重新探测剪映路径并更新配置（剪映重装后用）
   powershell -ExecutionPolicy Bypass -File install.ps1 -PluginMode  # Codex 插件模式：环境装到用户目录，不写宿主配置
+  powershell -ExecutionPolicy Bypass -File install.ps1 -PluginMode -PreseedAsrModel tiny  # 预置语音识别小模型
 #>
 param(
     [switch]$DryRun,
@@ -31,7 +32,8 @@ param(
     [string]$JianyingBase,
     [string]$DraftRoot,
     [switch]$PluginMode,
-    [string]$RuntimeRoot
+    [string]$RuntimeRoot,
+    [string]$PreseedAsrModel
 )
 
 $ErrorActionPreference = 'Stop'
@@ -496,6 +498,37 @@ if ($SkipPip) {
         throw "依赖安装失败（pip 退出码 $pipExit）。完整日志：$pipLogPath"
     }
     Write-Ok "依赖安装完成（日志：$pipLogPath）"
+}
+
+# ---------- 2.5) 可选：预置语音识别模型 ----------
+if ($PreseedAsrModel) {
+    Write-Step '2/4' "预置语音识别模型（$PreseedAsrModel）"
+    $modelDir = Join-Path $runtimeDir 'models'
+    if ($DryRun) {
+        Write-Warn2 "将下载 faster-whisper 模型 $PreseedAsrModel 到 $modelDir（tiny≈75MB，base≈145MB，small≈461MB）"
+    } elseif ($SkipPip) {
+        Write-Warn2 "按 -SkipPip 跳过模型预置；首次 transcribe 时会自动下载"
+    } else {
+        if (-not (Test-Path -LiteralPath $modelDir)) {
+            New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+        }
+        Write-Warn2 "正在下载模型（需要访问 HuggingFace；失败不阻断安装，首次转写会自动重试）…"
+        $modelCode = @"
+from faster_whisper import WhisperModel
+WhisperModel(r'$PreseedAsrModel', device='cpu', compute_type='int8', download_root=r'$modelDir')
+print('asr-model-ready')
+"@
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $venvPy -c $modelCode
+        $modelExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevPref
+        if ($modelExit -ne 0) {
+            Write-Warn2 "模型预置失败：这不影响安装；网络可用时首次 transcribe 会自动下载。"
+        } else {
+            Write-Ok "语音识别模型已就绪：$modelDir"
+        }
+    }
 }
 
 }  # end of: if (-not $PathsOnly)

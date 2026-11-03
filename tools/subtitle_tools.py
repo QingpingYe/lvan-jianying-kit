@@ -19,6 +19,10 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import jy_template  # noqa: E402
+
 from jianying_tool.native_codec import decode_file, project_content_path
 from jianying_tool.timeline import update_project_json
 
@@ -27,7 +31,10 @@ HEADER = ["track", "index", "start", "end", "text"]
 
 
 def load_jianying_paths() -> dict[str, str]:
-    """读取安装器写入的 jianying-paths.json（剪映或草稿目录不在默认位置时用）。"""
+    """读取安装器写入的路径配置（兼容 runtime.json 与旧的 jianying-paths.json）。"""
+    applied = jy_template.apply_jianying_env()
+    if applied:
+        return applied
     here = Path(__file__).resolve().parent
     for base in (here.parent, here):
         path = base / "jianying-paths.json"
