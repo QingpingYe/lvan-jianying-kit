@@ -1,6 +1,6 @@
 {
   "name": "jianying-kit",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Let Codex drive JianyingPro (CapCut CN desktop) drafts through a local MCP server: build drafts from scripts and clips, edit segments, add subtitles, BGM, voiceover, and export. Windows only.",
   "author": {
     "name": "YeQingping"
