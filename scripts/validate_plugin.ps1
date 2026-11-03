@@ -77,6 +77,11 @@ foreach ($skill in @('setup', 'analyze-video', 'video-pipeline', 'template-batch
     else { Write-Host "MISS  SKILL $skill" -ForegroundColor Red; $fail++ }
 }
 
+# 粗剪决策规则集是技能运行时必读的参考文件
+$roughcutRules = Join-Path $root 'skills\rough-cut\references\decision-rules-v0.1.md'
+if (Test-Path -LiteralPath $roughcutRules) { Write-Host "OK    RULES rough-cut" -ForegroundColor Green }
+else { Write-Host "MISS  RULES rough-cut" -ForegroundColor Red; $fail++ }
+
 if ($fail) {
     Write-Host "自检未通过：$fail 项" -ForegroundColor Red
     exit 1
