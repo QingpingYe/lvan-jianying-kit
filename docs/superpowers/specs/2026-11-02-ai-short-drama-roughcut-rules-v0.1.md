@@ -107,7 +107,7 @@
 
 edit plan 每镜必填：`segments`、`reason`、`confidence`、`alternates`、`transition_out`、`review`。
 
-- `confidence < 0.6` 必须写 `review`；
+- 入选镜头 `confidence` 不得低于 0.6（低于 0.6 属淘汰档，校验器报错）；0.6 至 0.75 必须写 `review`；
 - `unresolved` 素材不进时间线，只进报告；
 - 校验器强制：区间合法、无重叠、全覆盖、低置信已标注。
 

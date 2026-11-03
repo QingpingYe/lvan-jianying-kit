@@ -18,7 +18,7 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 1. **清点**：`& $py <root>\tools\roughcut.py scan --source <素材目录>`，读产物 `scan.json`（时长以视频流为准）。
 2. **命名推断**：读文件名列表，推断「镜头 ↔ take ↔ 分段」的组织关系，写 `grouping.json`（见下方字段速查）。每个推断写 evidence；判不准的进 `unresolved`，绝不硬猜。
 3. **看片建卡**：`& $py <root>\tools\roughcut.py frames --grouping <out>\grouping.json`，生成同镜 take 并排的联系表；用 `view_image` 逐张看，对照剧本/分镜记录：头尾稳定性、中段崩坏、人物/服装一致性、动作完成度、情绪匹配。
-4. **逐镜决策**：按规则集为每个 shot 定首选 / 备选 / 取用区间 / 理由 / 置信度，写 `roughcut.json`；`& $py <root>\tools\roughcut.py report --plan <out>\roughcut.json` 生成人读 `roughcut.md`。
+4. **逐镜决策**：按规则集为每个 shot 定首选 / 备选 / 取用区间 / 理由 / 置信度，写 `roughcut.json`；`& $py <root>\tools\roughcut.py report --plan <out>\roughcut.json` 生成人读 `roughcut.md`（含备选 take、计划警告与待确认清单；无剧本时自动声明「未对剧本验证」）。
 5. **校验**：`& $py <root>\tools\roughcut.py validate --grouping <...> --plan <...>`，必须 0 error 才能继续。
 6. **交付**：把待确认清单给用户过目；`& $py <root>\tools\roughcut.py build --plan <out>\roughcut.json [--name <草稿名>]` 建草稿；让用户在剪映验收：镜序、取用区间、无黑帧、叠化正确。
 
@@ -30,6 +30,7 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 - 改草稿前确认剪映已退出目标草稿（否则剪映会用内存版本覆盖）。
 - 改过 plan 后重建要换新草稿名，不覆盖已交付的草稿。
 - 判断结论必须落盘：每个镜头的 `reason` / `confidence`、每个落选 take 的备注。
+- 同一镜头未入选的 take 必须逐条写进 `alternates` 并写 `note`；`alternates` / `transition_out` / `review` 三个键不许缺。
 
 ## 字段速查
 
@@ -50,7 +51,9 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 }
 ```
 
-`roughcut.json`（edit plan）：每镜必填 `shot` / `segments` / `reason` / `confidence` / `alternates` / `transition_out` / `review`；`segments` 字段是 `file` / `source_start` / `duration`；`confidence < 0.6` 必须写 `review`；顶层 `canvas` 必填，可选 `subtitles` / `bgm` / `voiceover` 透传块与 `source_audio`（`keep` / `mute`）。
+`grouping.json` 约束：`scheme` / `scheme_confidence` / `evidence` 必填；`shot` 全局唯一、同镜 `take` 唯一；`unresolved` / `excluded` 每条必须写 `reason`。
+
+`roughcut.json`（edit plan）：每镜必填 `shot` / `segments` / `reason` / `confidence` / `alternates` / `transition_out` / `review`；`segments` 字段是 `file` / `source_start` / `duration`；未入选素材必须逐条进 `alternates` 且写 `note`；入选镜头 `confidence` 不得低于 0.6（低于 0.6 属淘汰档），0.6 至 0.75 必须写 `review`；`dissolve` 的 `duration` 必须是 0.3 至 0.8 秒；顶层 `canvas` 必填，可选 `subtitles` / `bgm` / `voiceover` 透传块与 `source_audio`（`keep` / `mute`）。
 
 ## 失败时
 

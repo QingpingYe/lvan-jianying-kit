@@ -164,8 +164,10 @@ jianying-kit/
 - `canvas` 必填：由 scan 结果推断后写入（建议众数分辨率/帧率），缺失是校验错误。
 - `transition_out.type` v1 支持 `hard_cut` 与 `dissolve`（带 `duration`）；其他类型只写建议，不执行。
   `effects` 同理只标注。
-- `reason` 必填（每个入选镜头都要有理由）；`confidence` ∈ [0,1]；低于 0.6 的镜头必须把问题写进
-  `review`（字符串数组），校验器强制且不阻断 build，但报告置顶。
+- `reason` 必填（每个入选镜头都要有理由）；`confidence` ∈ [0,1]；入选镜头不得低于 0.6
+  （低于 0.6 属规则淘汰档，校验报错）；0.6 至 0.75 的镜头必须把问题写进 `review`
+  （字符串数组）并在报告置顶。`alternates` / `transition_out` / `review` 三个键必须存在；
+  同镜未入选素材必须逐条进入 `alternates` 且 `note` 非空。
 - 可选透传块 `subtitles` / `bgm` / `voiceover`：原样并入 shotlist，复用 `build_draft.py` 已有能力。
 - 顶层可选 `source_audio: keep | mute`：默认 `keep`；要静音原素材声音时声明 `mute`，
   执行层用现有音量命令处理（具体字段名留待实现）。
@@ -247,7 +249,7 @@ jianying-kit/
 6. `plan_to_shotlist` 的 `target_start` 累加正确。
 7. `report.md` 生成：待确认清单必含 unresolved 与低置信项。
 8. `--dry-run` 走全量校验但不写任何文件（对齐 template-batch 的验收标准）。
-9. 低置信（<0.6）镜头未写进 `review` 时校验失败；写了则 build 放行。
+9. 入选镜头 `confidence < 0.6` 校验失败；0.6 至 0.75 未写 `review` 同样失败。
 10. `unresolved` 的素材不出现在 plan→shotlist 的结果里。
 
 ## 15. 交付后如何验收
@@ -281,13 +283,30 @@ jianying-kit/
 | 复核问题 | 归属 | 结论位置 |
 | --- | --- | --- |
 | 联系表由谁生成：核心脚本还是会话里临时写代码 | 我定 | §9 / §10 增加 `frames`：抽帧与联系表是确定性事务，进核心与 CLI |
-| `review` 字段的结构没定义 | 我定 | §8.2：字符串数组；低置信（<0.6）镜头必须出现在其中 |
-| 低置信镜头是否阻断建草稿 | 我定 | §9：不阻断，但校验器强制其进 `review`，报告置顶 |
+| `review` 字段的结构没定义 | 我定 | §8.2：字符串数组；0.6 至 0.75 的入选镜头必须出现在其中 |
+| 低置信镜头是否阻断建草稿 | 我定 | §9：0.6 至 0.75 不阻断但必须进 `review`；< 0.6 直接校验失败 |
 | unresolved 素材是否放进草稿时间线 | 我定 | §13：不进草稿，仅报告列出（混入成片的风险更大） |
 | plan 是否透传字幕/BGM/配音 | 我定 | §8.2：可选透传块，原样并入 shotlist |
 | 原素材声音保留还是静音 | 我定 | §8.2：默认 keep，可在 plan 声明 mute |
 | canvas 缺省怎么办 | 我定 | §8.2：canvas 必填，由 scan 结果推断填入 |
 | 转场应用机制（CLI 还是 MCP） | 实现阶段 | §9 措辞放宽，§16 保留 |
+
+## 19. 复审修订（2026-11-03）
+
+独立复审（见 `docs/superpowers/reviews/2026-11-03-ai-short-drama-roughcut-review.md`）后落地的语义修订：
+
+- 用户 JSON 读取统一兼容 UTF-8 BOM（PowerShell 5.1 产物与仓库示例）。
+- `scan.root == grouping.root == plan.source_root` 强绑定，不一致直接校验失败；
+  validate / build 在 `check_files=True` 下检查素材与辅助文件是否仍在磁盘上。
+- `shot` 全局唯一、同镜 `take` 唯一；重复即校验失败。
+- 覆盖审计到素材级：同镜未入选素材必须逐条进入 `alternates` 且 `note` 非空；
+  `alternates` / `transition_out` / `review` 不允许整体缺失；空 plan 直接失败。
+- 阈值统一：入选镜头 `confidence ≥ 0.6`，0.6 至 0.75 必须写 `review`（规则集 §3/§10）。
+- `dissolve` 时长必须是 0.3 至 0.8 秒的有限数值，越界或非数值为校验错误。
+- build 在任何写盘前完成同名草稿预检，碰撞时零写入。
+- `report` 默认加载同目录 `grouping.json`，输出备选 take、`plan.warnings` 与
+  「未对剧本验证」声明。
+- 联系表单张 ≤ 12 格：超出时降低每素材采样数并按页拆分 `shot-<id>-<n>.jpg`。
 | segments 是否带 speed | 我定 | §8.2：v1 恒 1，不写 speed |
 | 一集与文件夹的关系 | 既有上下文 | §13：一个文件夹 = 一集 |
 
