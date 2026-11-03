@@ -151,6 +151,30 @@ class DuplicateTests(unittest.TestCase):
             jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [42], force=True)
             jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [])
 
+    def test_assert_draft_writable_can_assume_the_draft_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            with self.assertRaisesRegex(jy_template.TemplateError, "剪映"):
+                jy_template.assert_draft_writable(root, "模板", process_ids=lambda: [42])
+            jy_template.assert_draft_writable(
+                root, "模板", process_ids=lambda: [42], assume_closed=True
+            )
+
+    def test_clear_tracks_removes_only_requested_tracks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_template_draft(root, "模板")
+            result = jy_template.clear_tracks(
+                root, "模板", ["main_video"], process_ids=lambda: []
+            )
+            self.assertEqual(result["cleared"], {"main_video": 1})
+            status = jy_template.draft_status(root, "模板", process_ids=lambda: [])
+            self.assertEqual(status["video_segments"], 0)
+            content, _ = jy_template.read_draft(root, "模板")
+            title = next(track for track in content["tracks"] if track.get("name") == "title")
+            self.assertTrue(title["segments"])
+
     def test_assert_draft_writable_allows_an_empty_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

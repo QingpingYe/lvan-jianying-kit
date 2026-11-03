@@ -269,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="目标草稿已存在（例如先在剪映里建好空草稿），跳过创建、直接填入内容")
     ap.add_argument("--force", action="store_true",
                     help="跳过剪映占用/非空草稿保护；确认风险后才使用")
+    ap.add_argument("--draft-closed", action="store_true",
+                    help="已确认目标草稿在剪映里关闭（剪映进程可以继续开着）")
     args = ap.parse_args(argv)
 
     python_exe = venv_python(args.python)
@@ -319,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                 import jy_template
 
                 jy_template.assert_draft_writable(
-                    draft_root, name, force=args.force
+                    draft_root, name, force=args.force, assume_closed=args.draft_closed
                 )
             except ImportError:
                 pass

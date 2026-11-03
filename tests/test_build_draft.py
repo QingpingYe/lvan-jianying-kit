@@ -225,6 +225,30 @@ class MainBuildTests(unittest.TestCase):
                          "--python", sys.executable]
                     )
 
+    def test_draft_closed_flag_is_passed_to_the_host_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            shotlist = self._shotlist(tmp, {"source_start": 0.0, "duration": 2.0})
+            drafts = tmp / "drafts"
+            (drafts / "第3集-粗剪").mkdir(parents=True)
+
+            class FakeBuilder(self.RecordingBuilder):
+                def run(self, *args, raw=False):
+                    return {"draft_root": str(drafts)} if args and args[0] == "probe" else {}
+
+            with mock.patch.object(build_draft, "Builder", FakeBuilder), \
+                    mock.patch.object(build_draft, "existing_video_segment_count", return_value=0), \
+                    mock.patch("jy_template.assert_draft_writable") as guard, \
+                    mock.patch("jy_template.verify_timeline", return_value={"ok": True, "errors": []}):
+                rc = build_draft.main(
+                    ["--shotlist", str(shotlist), "--root", str(drafts), "--existing",
+                     "--draft-closed", "--python", sys.executable]
+                )
+            self.assertEqual(rc, 0)
+            guard.assert_called_once_with(
+                drafts, "第3集-粗剪", force=False, assume_closed=True
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

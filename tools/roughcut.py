@@ -119,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--existing", action="store_true")
     p.add_argument("--force", action="store_true",
                    help="跳过剪映占用/非空草稿保护；确认风险后才使用")
+    p.add_argument("--replace-timeline", action="store_true",
+                   help="在同一草稿里清空计划接管的轨道后重建（配合 --existing）")
+    p.add_argument("--draft-closed", action="store_true",
+                   help="已确认目标草稿在剪映里关闭（剪映进程可以继续开着）")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--out")
 
@@ -199,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                 existing=args.existing,
                 dry_run=args.dry_run,
                 force=args.force,
+                replace_timeline=args.replace_timeline,
+                draft_closed=args.draft_closed,
             )
             _print({"ok": True, **built})
             return 0

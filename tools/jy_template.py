@@ -234,11 +234,16 @@ def assert_draft_writable(
     name: str,
     *,
     force: bool = False,
+    assume_closed: bool = False,
     process_ids: Any = None,
 ) -> dict[str, Any]:
-    """写前守卫：剪映开着且目标草稿非空时拒绝写入。"""
+    """写前守卫：剪映开着且目标草稿非空时拒绝写入。
+
+    ``assume_closed`` 用于“剪映进程还开着，但用户已确认目标草稿关闭”的
+    同草稿迭代场景；它只跳过宿主占用判断，不跳过备份与写后核对。
+    """
     status = draft_status(root, name, process_ids=process_ids)
-    if force or not status["host_running"]:
+    if force or assume_closed or not status["host_running"]:
         return status
     video = status.get("video_segments") or 0
     audio = status.get("audio_segments") or 0
@@ -248,9 +253,61 @@ def assert_draft_writable(
             "剪映正在运行，且目标草稿 "
             f"{name} 已有 {video} 个视频片段 / {audio} 个音频片段。"
             "剪映内存里的版本可能覆盖本次写入：请先在剪映中退出该草稿（或完全退出剪映）后重试，"
-            "确认风险后也可加 --force。"
+            "确认已关闭可加 --draft-closed，确认风险可加 --force。"
         )
     return status
+
+
+def clear_tracks(
+    root: str | Path | None,
+    name: str,
+    track_names: list[str],
+    *,
+    force: bool = False,
+    assume_closed: bool = False,
+    process_ids: Any = None,
+) -> dict[str, Any]:
+    """清空指定轨道上的所有片段，保留素材池、身份与其他轨道。
+
+    同草稿重建时先清掉计划接管的轨道（主视频、字幕、BGM、配音），
+    再让构建器往原草稿里填新内容。写入走 update_project_json，会按
+    现有格式加备份并同步根文件/活动时间线。
+    """
+    resolved = resolve_root(root)
+    names = [str(item).strip() for item in track_names if str(item or "").strip()]
+    if not names:
+        raise TemplateError("clear_tracks 需要至少一个轨道名")
+    status = assert_draft_writable(
+        resolved,
+        name,
+        force=force,
+        assume_closed=assume_closed,
+        process_ids=process_ids,
+    )
+    project = _project(resolved, name)
+    cleared: dict[str, int] = {}
+
+    def mutate(content: dict[str, Any]) -> None:
+        for track in content.get("tracks", []):
+            track_name = str(track.get("name") or "")
+            if track_name not in names:
+                continue
+            segments = track.get("segments")
+            if isinstance(segments, list):
+                cleared[track_name] = len(segments)
+            track["segments"] = []
+        end = 0
+        for track in content.get("tracks", []):
+            for segment in track.get("segments") or []:
+                target = segment.get("target_timerange") or {}
+                try:
+                    end = max(end, int(target.get("start", 0)) + int(target.get("duration", 0)))
+                except (TypeError, ValueError):
+                    continue
+        content["duration"] = end
+
+    update_project_json(project, mutate)
+    return {"draft": name, "cleared": cleared, "status": status}
 
 
 def _us_to_seconds(value: Any) -> float:

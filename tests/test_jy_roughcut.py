@@ -1070,6 +1070,77 @@ class BuildTests(unittest.TestCase):
                 )
             self.assertFalse(out.exists())
 
+    def test_build_replace_timeline_reuses_the_same_draft_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            plan = make_plan([make_shot("01", ["a.mp4"])])
+            order: list[tuple] = []
+            builder_args: list[str] = []
+
+            def clearer(name, tracks):
+                order.append(("clear", name, tuple(tracks)))
+                return {"cleared": {"main_video": 5}}
+
+            def builder(args):
+                order.append(("build", tuple(args)))
+                builder_args.extend(args)
+                return {}
+
+            result = jy_roughcut.build(
+                plan, scan, grouping, out,
+                existing=True,
+                replace_timeline=True,
+                draft_closed=True,
+                check_files=False,
+                draft_exists=lambda name: True,
+                draft_status=lambda name: {
+                    "exists": True,
+                    "video_segments": 5,
+                    "audio_segments": 1,
+                    "readable": True,
+                    "managed": True,
+                    "host_running": True,
+                },
+                clear_draft_tracks=clearer,
+                run_builder=builder,
+                run_transition=lambda args: {},
+            )
+            self.assertEqual(order[0][0], "clear")
+            self.assertEqual(order[1][0], "build")
+            self.assertEqual(order[0][2], ("main_video",))
+            self.assertIn("--existing", builder_args)
+            self.assertIn("--draft-closed", builder_args)
+            self.assertEqual(result["replaced_tracks"], {"main_video": 5})
+
+    def test_build_replace_timeline_requires_draft_closed_while_host_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "roughcut"
+            scan = make_scan("a.mp4")
+            grouping = grouping_for({"01": "a.mp4"})
+            plan = make_plan([make_shot("01", ["a.mp4"])])
+            with self.assertRaisesRegex(jy_roughcut.RoughcutError, "draft-closed"):
+                jy_roughcut.build(
+                    plan, scan, grouping, out,
+                    existing=True,
+                    replace_timeline=True,
+                    check_files=False,
+                    draft_exists=lambda name: True,
+                    draft_status=lambda name: {
+                        "exists": True,
+                        "video_segments": 5,
+                        "audio_segments": 1,
+                        "readable": True,
+                        "managed": True,
+                        "host_running": True,
+                    },
+                    clear_draft_tracks=lambda name, tracks: {},
+                    run_builder=lambda args: {},
+                    run_transition=lambda args: {},
+                )
+            self.assertFalse(out.exists())
+
     def test_cli_validate_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "第3集"

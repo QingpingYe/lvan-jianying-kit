@@ -1329,8 +1329,17 @@ def build(
     run_transition: Callable[[list[str]], dict[str, Any]] | None = None,
     draft_status: Callable[[str], dict[str, Any] | None] | None = None,
     force: bool = False,
+    replace_timeline: bool = False,
+    draft_closed: bool = False,
+    clear_draft_tracks: Callable[[str, list[str]], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    """校验通过后：草稿碰撞预检 → 写 shotlist → 建草稿 → 挂叠化 → 按需静音。"""
+    """校验通过后：草稿碰撞预检 → 写 shotlist → （可选）清轨重建 → 挂转场/静音/音轨。
+
+    ``replace_timeline`` 让 ``--existing`` 从“只允许空草稿追加”升级为
+    “在同一草稿里重建计划接管的轨道”：先清空主视频与计划声明的字幕/
+    BGM/配音轨，再在原草稿名与原身份下重新构建。``draft_closed`` 是用户
+    对“已在剪映里关闭该草稿”的显式确认，允许剪映进程继续运行时写入。
+    """
     out = Path(out)
     grouping_validation = validate_grouping(grouping, scan, check_files=check_files)
     validation = validate_plan(plan, scan, grouping, check_files=check_files)
@@ -1346,6 +1355,21 @@ def build(
     if present is False and existing:
         raise RoughcutError(f"--existing 模式要求草稿已存在，但没有找到：{name}")
     track = plan.get("video_track", "main_video")
+    owned_tracks: list[str] = []
+    if existing and replace_timeline:
+        owned_tracks.append(str(track))
+        for key, default in (
+            ("subtitles", "subtitle"),
+            ("bgm", "bgm"),
+            ("voiceover", "bgm"),
+        ):
+            block = plan.get(key)
+            if isinstance(block, dict):
+                owned_tracks.append(str(block.get("track") or default))
+        voiceover = plan.get("voiceover")
+        if isinstance(voiceover, dict) and voiceover.get("subtitles"):
+            owned_tracks.append(str(voiceover.get("subtitle_track") or "subtitle"))
+        owned_tracks = list(dict.fromkeys(item for item in owned_tracks if item.strip()))
     if existing:
         status_reader = draft_status or _default_draft_status
         try:
@@ -1357,22 +1381,22 @@ def build(
             audio = int(status.get("audio_segments") or 0)
             readable = bool(status.get("readable"))
             managed = bool(status.get("managed"))
-            if (
-                status.get("host_running")
-                and (video or audio or (managed and not readable))
-                and not force
-            ):
+            host_blocked = bool(status.get("host_running")) and (
+                video or audio or (managed and not readable)
+            )
+            if host_blocked and not force and not draft_closed:
                 raise RoughcutError(
                     f"剪映正在运行，且目标草稿 {name} 已有内容"
                     f"（{video} 个视频片段 / {audio} 个音频片段）。"
-                    "剪映内存版本可能覆盖本次写入：请先退出该草稿或完全退出剪映，"
-                    "确认风险后再加 --force。"
+                    "剪映内存版本可能覆盖本次写入：请先在剪映里关闭该草稿；"
+                    "确认已关闭可加 --draft-closed（剪映进程可以继续开着），"
+                    "确认有风险可加 --force。"
                 )
-            if video and not force:
+            if video and not force and not replace_timeline:
                 raise RoughcutError(
                     f"目标草稿非空：--existing 草稿的 {track} 轨道已有 {video} 个视频片段；"
-                    "本模式只保证在空草稿上正确追加，请换新草稿名，"
-                    "或确认后加 --force。"
+                    "本模式只保证在空草稿上正确追加。要在同一草稿上重建，加 --replace-timeline"
+                    "（会先备份并清空计划接管的轨道）；要保留旧版就换新草稿名。"
                 )
     shotlist = plan_to_shotlist(plan, draft_name=name)
     source_root = Path(plan["source_root"])
@@ -1422,6 +1446,7 @@ def build(
             "muted_planned": total_segments if mute else 0,
             "segment_edits_planned": len(segment_edits),
             "audio_tracks_planned": len(audio_tracks),
+            "tracks_to_clear": owned_tracks if replace_timeline else [],
             "warnings": warnings,
         }
 
@@ -1429,6 +1454,25 @@ def build(
     shotlist_path.write_text(
         json.dumps(shotlist, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    cleared_tracks: dict[str, int] = {}
+    if existing and replace_timeline:
+        clearer = clear_draft_tracks
+        if clearer is None:
+            import jy_template
+
+            def clearer(name_arg: str, tracks_arg: list[str]) -> dict[str, Any] | None:
+                return jy_template.clear_tracks(
+                    None,
+                    name_arg,
+                    tracks_arg,
+                    force=force,
+                    assume_closed=draft_closed,
+                )
+        clear_result = clearer(name, owned_tracks) or {}
+        cleared_tracks = {
+            str(key): int(value)
+            for key, value in (clear_result.get("cleared") or {}).items()
+        }
     builder = run_builder or _default_builder_runner
     builder_args = ["--shotlist", str(shotlist_path)]
     if draft_name:
@@ -1437,6 +1481,8 @@ def build(
         builder_args += ["--existing"]
     if force:
         builder_args += ["--force"]
+    if draft_closed:
+        builder_args += ["--draft-closed"]
     builder_result = builder(builder_args) or {}
 
     runner = run_transition or _default_cli_runner
@@ -1541,6 +1587,8 @@ def build(
             for item in audio_tracks
         ],
         "audio_tracks_applied": audio_applied,
+        "replaced_tracks": cleared_tracks,
+        "draft_closed": draft_closed,
     }
     manifest_path = out / "manifest.json"
     manifest_path.write_text(
@@ -1555,6 +1603,7 @@ def build(
         "muted_segments": muted,
         "segment_edits_applied": edited,
         "audio_tracks_applied": audio_applied,
+        "replaced_tracks": cleared_tracks,
         "skipped": skipped,
         "warnings": warnings,
     }

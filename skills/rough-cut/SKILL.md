@@ -21,8 +21,26 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 4. **音频核验（有对白/旁白必做）**：逐条跑 `& $py <root>\tools\roughcut.py transcribe --media <文件> --out <out>\transcripts\<名>.json --language zh --initial-prompt "<该镜剧本台词，空格分隔>"`（可选 `--srt`）。提示词直接给剧本原文，能把「膝下敬禀者 / 戚家军 / 治军极严」这类同音字错误压下去；输出用词级时间戳还原逐句区间。读文本对照剧本与该镜画面主体，标记：台词缺失、与画面不符、同一句重复、镜内顺序颠倒、旁白错位。结论写进对应 shot 的 `review`；需要重排声音时写 `audio_tracks`（不要只写 `audio_repair` 备注）。转写走 ffmpeg+numpy，不依赖 jianying-tool 的 PyAV 链路；首次会下载模型，或安装时用 `-PreseedAsrModel tiny` 预置。
 5. **逐镜决策**：按规则集为每个 shot 定首选 / 备选 / 取用区间 / 理由 / 置信度，写 `roughcut.json`；`& $py <root>\tools\roughcut.py report --plan <out>\roughcut.json` 生成人读 `roughcut.md`（含备选 take、音频处理、计划警告与待确认清单；无剧本时自动声明「未对剧本验证」）。
 6. **校验**：`& $py <root>\tools\roughcut.py validate --grouping <...> --plan <...>`，必须 0 error 才能继续。
-7. **交付**：把待确认清单给用户过目；`& $py <root>\tools\roughcut.py build --plan <out>\roughcut.json [--name <草稿名>]` 建草稿。`--existing` 只保证往空草稿追加；剪映开着且目标草稿非空时工具会拒绝写入，必须先退出该草稿或退出剪映（确认风险才加 `--force`）。build 会写 `manifest.json` 并在写后核对段数与时间点（±1 帧），核对失败必须重建。
+7. **交付**：把待确认清单给用户过目；`& $py <root>\tools\roughcut.py build --plan <out>\roughcut.json [--name <草稿名>]` 建草稿（第一次用新名字）。build 会写 `manifest.json` 并在写后核对段数与时间点（±1 帧），核对失败必须重建。
 8. **音画审计**：`& $py <root>\tools\roughcut.py audit --plan <out>\roughcut.json --draft <草稿名> --transcript <out>\transcripts\<名>.json`；产出 `roughcut-audit.json` / `roughcut-audit.md`，逐句给出「台词 → 镜头 → 时间线」，并列出静音区间与分离音轨。audit 通过后再让用户在剪映验收：镜序、取用区间、无黑帧、叠化正确、口型与台词同画。
+
+## 迭代循环（同一草稿反复改）
+
+用户打开剪映验收、发现问题后，在**同一个草稿**上继续改，不要每次新建版本：
+
+1. 先在剪映里关闭该草稿（剪映进程可以继续开着；只要草稿不在打开状态）。
+2. 小改（改一段区间、静音、音量、转场、字幕、音轨）：直接用 `jianying_tool.cli edit-segment / split-segment / transition` 等命令改同一草稿。
+3. 改过 `roughcut.json` 后整体重建：
+   `& $py <root>\tools\roughcut.py build --plan <out>\roughcut.json --name <原草稿名> --existing --replace-timeline --draft-closed`
+   工具会先备份、清空计划接管的轨道（主视频 + 计划里声明的字幕/BGM/配音轨），再在原草稿名与原身份下重建，最后写后核对。
+4. 重新在剪映打开同一草稿验收。Jianying 会把草稿迁移成加密结构，这是正常的；插件用编解码层继续读写。
+5. 只有想保留一个快照时才换新草稿名；日常迭代固定用原名字。
+
+注意：
+
+- `--draft-closed` 是“我已确认该草稿在剪映里关闭”的声明；草稿还开着时不要用，否则剪映内存版本会覆盖写入。
+- `--replace-timeline` 只清计划接管的轨道。Jianying 自己加的其他轨道（例如你手工拆出来的音频轨）会保留下来；如果它不该保留，先在剪映里删掉或在 plan 里声明对应轨道。
+- 每次重建都会写 `.jianying-tool-backups`，需要回滚时从那里取。
 
 ## 硬规则
 
@@ -30,7 +48,7 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 - 不许跳过 validate；校验有 error 时不许 build。
 - 源素材只读：不修改、不删除、不重命名。
 - 改草稿前确认剪映已退出目标草稿（否则剪映会用内存版本覆盖）；插件会做写前拦截与写后核对，失败就重建，不用 `--force` 硬闯。
-- 改过 plan 后重建要换新草稿名，不覆盖已交付的草稿。
+- 同一草稿可以反复迭代：关闭草稿后加 `--existing --replace-timeline --draft-closed` 重建；只有需要保留旧版快照时才换新草稿名。
 - 判断结论必须落盘：每个镜头的 `reason` / `confidence`、每个落选 take 的备注。
 - 同一镜头未入选的 take 必须逐条写进 `alternates` 并写 `note`；`alternates` / `transition_out` / `review` 三个键不许缺。
 - 音画修复必须写进可校验字段：逐段用 `segments[].mute` / `segments[].volume`，分离音轨用顶层 `audio_tracks`；不要只写 `audio_repair` 自由文本。
@@ -67,8 +85,8 @@ description: AI 短剧智能粗剪：清点一集素材、推断命名分组、�
 - validate 报 coverage 类错误：说明分组表漏了素材或重复覆盖，先修 `grouping.json` 再重跑。
 - validate 报「超出视频流时长」：改小 `duration` 或把 `source_start` 前移（容器时长不可信）。
 - build 报草稿已存在：换 `--name`，或确认后加 `--existing`。
-- build 报「目标草稿非空」：`--existing` 只支持空草稿；改内容请换新草稿名，不要靠 `--force` 叠加。
-- build 报「剪映正在运行」或写后核对失败：先在剪映里关闭/退出该草稿（或完全退出剪映），再用新草稿名重建。
+- build 报「目标草稿非空」：`--existing` 默认只支持空草稿；要在原草稿上重建，加 `--replace-timeline`；只想保留旧版才换新草稿名。
+- build 报「剪映正在运行」：先在剪映里关闭该草稿；确认已关闭后加 `--draft-closed`（不需要退出剪映）。写后核对失败时改用 `audit` 对照计划与草稿。
 - edit-segment 报 overlaps：通常说明磁盘时间线与剪映内存里的工作副本不一致，不是可以直接忽略的误报；先用 `audit` 对照计划与草稿。
 - transcribe 首次运行要下载模型：安装时加 `-PreseedAsrModel tiny`，或保证能访问 HuggingFace 后重跑；模型目录可用 `--model-dir` 指定。
 - audit 报某段 source_start / target_start 超差：先确认是否在剪映里手工改过；手工改动要回写进 plan 或新建草稿。

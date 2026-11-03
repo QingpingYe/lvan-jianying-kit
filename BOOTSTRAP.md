@@ -85,7 +85,7 @@ powershell -ExecutionPolicy Bypass -File "$kit\install.ps1" -Portable
 **已知环境问题（0.8.x，真实素材实测暴露）**：
 
 - **Python 3.14 + PyAV 19**：`jianying_tool.cli transcribe` 会报 `open() got an unexpected keyword argument 'metadata_errors'`。粗剪的 `roughcut.py transcribe` 已改为 `ffmpeg → numpy → faster-whisper`，不受此影响；安装时可用 `-PreseedAsrModel tiny` 预置模型。必须用上游 CLI 时，先降级 `av` 或等上游修复。
-- **剪映会接管它打开过的草稿**：迁移后出现 `Timelines/`、`agent/` 等目录，时间线加密。插件在写非空草稿前会检查剪映进程，写后回读核对段数与时间点（±1 帧）；被拒绝时先在剪映里退出该草稿。
+- **剪映会接管它打开过的草稿**：迁移后出现 `Timelines/`、`agent/` 等目录，时间线加密。插件仍可通过编解码层继续读写同一草稿：先在剪映里关闭该草稿（进程可以继续开着），迭代时用 `build --existing --replace-timeline --draft-closed` 在原草稿名上重建；写后回读核对段数与时间点（±1 帧）。
 - **中文控制台**：CLI 已强制 UTF-8；外部脚本调用 `build_draft.py` / `roughcut.py` 时再设 `PYTHONIOENCODING=utf-8`，日志里的 `[cmd]` / `[stdout]` / `[stderr]` 前缀便于粘贴排障。
 
 **完全离线 / 下载被拦**：把 `python.3.13.16.nupkg`（来自
